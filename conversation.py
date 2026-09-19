@@ -9,21 +9,11 @@ from memory import Turn
 from prompts import build_speaker_prompt
 from storage import stamp
 
-_ACTION = re.compile(r"\*[^*\n]{1,80}\*")
-
-# Stage directions like "(nodding)" or "(laughs)". Prompts alone don't stop small
-# models from producing these, and the other model then copies the habit.
-_LEADING_PAREN = re.compile(r"^\([^()\n]{1,40}\)\s*")
-_GESTURE = re.compile(
-    r"\([^()\n]{0,30}(?:laugh|smil|nod|paus|sigh|lean|grin|chuckl|shrug|glanc|beam"
-    r"|eyebrow|thoughtful|excite|enthusias|vigorous)[^()\n]{0,30}\)\s*",
-    re.IGNORECASE,
-)
-
-# Agreement tics that make two models spiral into mutual flattery.
+# Filler openers that make two models spiral into mutual flattery. Only matched
+# when followed by punctuation, so "Absolutely not, because..." keeps its meaning.
 _FILLER_OPENER = re.compile(
-    r"^(?:(?:ah|oh|ha)[,!.]?\s+)?(?:exactly|absolutely|precisely|totally|definitely|indeed)\b[!,.]?\s*"
-    r"|^(?:ah|oh)[,!.]?\s+(?:yes|yeah)\b[!,.]?\s*",
+    r"^(?:(?:ah|oh|ha)[,!.]?\s+)?(?:exactly|absolutely|precisely|totally|definitely|indeed)\s*[,!.\u2014]+\s*"
+    r"|^(?:ah|oh)[,!.]?\s+(?:yes|yeah)\s*[,!.\u2014]+\s*",
     re.IGNORECASE,
 )
 _PRAISE = re.compile(
@@ -32,32 +22,38 @@ _PRAISE = re.compile(
 )
 
 
-def clean_reply(text, name):
-    """Strip habits models fall into: 'Name:' prefixes, stage directions, filler
-    agreement openers, praise for the other person, and wrapping quotes."""
+def clean_reply(text, name, truncated=False):
+    """Strip habits models fall into: 'Name:' prefixes, filler agreement openers,
+    praise for the other person, and wrapping quotes. Actions like *sighs* and
+    (laughs) are left alone.
+
+    `truncated` says the model hit the token limit; only then is a dangling
+    half-sentence at the end dropped."""
     text = text.strip()
     text = re.sub(rf"^{re.escape(name)}\s*:\s*", "", text, flags=re.IGNORECASE)
-    text = _ACTION.sub("", text)
-    text = _GESTURE.sub("", text)
+
     for _ in range(3):
-        stripped = _FILLER_OPENER.sub("", _LEADING_PAREN.sub("", text.strip()), count=1)
-        if stripped == text:
-            break
+        stripped = _FILLER_OPENER.sub("", text, count=1).strip()
+        if not stripped or stripped == text:
+            break  # nothing left to strip (or it would erase the whole reply)
         text = stripped
-    text = _PRAISE.sub("", text).strip()
+
+    text = (_PRAISE.sub("", text).strip()) or text
     text = text[:1].upper() + text[1:]
     if len(text) > 1 and text[0] == '"' and text[-1] == '"' and text.count('"') == 2:
         text = text[1:-1].strip()  # the whole reply was wrapped in quotes
-    text = re.sub(r"[ \t]+", " ", text)
-    return _drop_cut_off_tail(text)
+    text = re.sub(r"[ \t]+", " ", text).strip()
+    return _drop_cut_off_tail(text) if truncated else text
 
 
-_ENDS_CLEANLY = re.compile(r"[.!?\u2026][\"')\]]?$")
-_TRAILING_FRAGMENT = re.compile(r"^(.*[.!?\u2026][\"')\]]?)\s+[^.!?\u2026]*$", re.DOTALL)
+# A reply ends cleanly on sentence punctuation (optionally followed by a closing
+# quote/bracket/asterisk) or on a finished *action*.
+_ENDS_CLEANLY = re.compile(r"(?:[.!?\u2026][\"')\]*]*|\*[^*\n]{1,80}\*)$")
+_TRAILING_FRAGMENT = re.compile(r"^(.*[.!?\u2026][\"')\]*]*)\s+[^.!?\u2026]*$", re.DOTALL)
 
 
 def _drop_cut_off_tail(text):
-    """If the token limit cut the reply mid-sentence, keep only the complete sentences."""
+    """Keep only the complete sentences of a reply that was cut off by the token limit."""
     if not text or _ENDS_CLEANLY.search(text):
         return text
     m = _TRAILING_FRAGMENT.match(text)
@@ -65,17 +61,22 @@ def _drop_cut_off_tail(text):
 
 
 class Conversation:
-    def __init__(self, client, personas, memory, scenario, opener, transcript_log, memory_log):
+    def __init__(
+        self, client, models, personas, memory, scenario_fn, opener,
+        transcript_log, memory_log,
+    ):
         self.client = client
-        self.personas = personas
+        self.models = models              # models[i] plays personas[i]
+        self.personas = personas          # personas[0] is the host and speaks first
         self.memory = memory
-        self.scenario = scenario
-        self.opener = opener
+        self.scenario_fn = scenario_fn    # (speaker, partner) -> scene text
+        self.opener = opener              # contains {partner}
         self.transcript_log = transcript_log  # append-only: every message
         self.memory_log = memory_log          # append-only: every summary update
 
     def run(self):
-        header = f"=== New session | {stamp()} ===\n\n"
+        a, b = self.personas
+        header = f"=== New session | {stamp()} | {a.name} (host) & {b.name} ===\n\n"
         self.transcript_log.write("\n" + header)
         self.memory_log.write("\n" + header)
 
@@ -84,20 +85,22 @@ class Conversation:
         error_streak = 0
 
         while config.MAX_TURNS is None or turn_no < config.MAX_TURNS:
-            speaker = self.personas[turn_no % 2]
-            partner = self.personas[(turn_no + 1) % 2]
+            idx = turn_no % 2
+            speaker = self.personas[idx]
+            partner = self.personas[1 - idx]
 
             system = build_speaker_prompt(
-                speaker, partner.name, self.scenario, self.memory.summary
+                speaker, partner.name, self.scenario_fn(speaker, partner),
+                self.memory.summary,
             )
             history = self.memory.chat_view(speaker.name) or [
-                {"role": "user", "content": self.opener}
+                {"role": "user", "content": self.opener.format(partner=partner.name)}
             ]
 
             print(f"{speaker.name}: ", end="", flush=True)
             try:
-                raw = self.client.chat(
-                    speaker.model,
+                reply = self.client.chat(
+                    self.models[idx],
                     [{"role": "system", "content": system}] + history,
                     temperature=config.SPEAKER_TEMPERATURE,
                     max_tokens=config.REPLY_MAX_TOKENS,
@@ -105,7 +108,7 @@ class Conversation:
                 )
             except LLMError as e:
                 error_streak += 1
-                if error_streak >= config.MAX_CONSECUTIVE_ERRORS:
+                if not e.retryable or error_streak >= config.MAX_CONSECUTIVE_ERRORS:
                     raise
                 print(
                     f"\n  [{e}]\n  [retrying in {config.RETRY_WAIT_SECONDS}s "
@@ -116,7 +119,7 @@ class Conversation:
             error_streak = 0
             print("\n")
 
-            text = clean_reply(raw, speaker.name)
+            text = clean_reply(reply.text, speaker.name, reply.truncated)
             if not text:
                 empty_streak += 1
                 if empty_streak >= 3:

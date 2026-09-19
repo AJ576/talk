@@ -3,10 +3,20 @@
 # --- Ollama ------------------------------------------------------------------
 OLLAMA_URL = "http://localhost:11434/api/chat"
 
+# Context window sent with every request. Ollama's default is small and it
+# silently cuts off the start of the prompt when it overflows, which would make
+# the personas slowly forget who they are. 8192 fits the persona prompt, the
+# summary and the verbatim window comfortably. Raise it if you raise the memory
+# settings below (bigger = more RAM).
+NUM_CTX = 8192
+
 # --- Models (any models you've pulled with `ollama pull`) ----------------------
-MODEL_A = "llama3.2"          # speaks as the first persona
-MODEL_B = "llama3.2"          # speaks as the second persona
+MODEL_A = "llama3.2"          # speaks as the first persona (the host)
+MODEL_B = "llama3.2"          # speaks as the second persona (the guest)
 SUMMARIZER_MODEL = "llama3.2" # third model: only condenses, never chats
+
+# --- Personas ------------------------------------------------------------------
+PERSONAS_PATH = "personas.md"  # relative paths are resolved next to the scripts
 
 # --- Memory / condensing -------------------------------------------------------
 # Recent turns are kept word-for-word. When there are MAX_RECENT_TURNS of them,

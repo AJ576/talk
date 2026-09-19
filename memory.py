@@ -15,8 +15,11 @@ from prompts import build_summarizer_messages
 CONTINUATION_CUE = "(the conversation continues)"
 
 RETRY_AFTER_TURNS = 2  # turns to wait before retrying a failed condense
+MAX_OVERSHOOT = 1.5    # a summary this many times over the word limit is rejected
 
 _PREAMBLE = re.compile(r"^\s*here('s| is| are)[^\n]*:\s*\n", re.IGNORECASE)
+# Everything after the last sentence end or line break (a cut-off fragment).
+_INCOMPLETE_TAIL = re.compile(r"[^.!?\u2026\n]*$")
 
 
 @dataclass
@@ -41,7 +44,21 @@ class Summarizer:
             temperature=self.temperature,
             max_tokens=int(self.max_words * 2),  # ~1.4 tokens/word, with headroom
         )
-        return _PREAMBLE.sub("", result).strip()
+        text = _PREAMBLE.sub("", result.text).strip()
+
+        if result.truncated:
+            # Hit the token limit mid-sentence: keep only the complete part, so a
+            # broken fragment never gets stored and fed into every later summary.
+            text = _INCOMPLETE_TAIL.sub("", text).rstrip()
+        if not text:
+            raise LLMError("summarizer returned nothing usable")
+
+        words = len(text.split())
+        if words > self.max_words * MAX_OVERSHOOT:
+            raise LLMError(
+                f"summary came back at {words} words (limit {self.max_words})"
+            )
+        return text
 
 
 class ConversationMemory:
@@ -70,6 +87,10 @@ class ConversationMemory:
 
         # If condensing keeps failing, don't let the verbatim window grow forever.
         if len(self.recent) > self.max_recent * 2:
+            print(
+                f"  [summarizer keeps failing: dropping {self.batch} old turns "
+                "without summarizing them]"
+            )
             del self.recent[: self.batch]
         return False
 
@@ -78,8 +99,6 @@ class ConversationMemory:
             updated = self.summarizer.condense(self.summary, self.recent[: self.batch])
         except LLMError as e:
             print(f"  [summarizer failed: {e}; retrying in {RETRY_AFTER_TURNS} turns]")
-            return False
-        if not updated:
             return False
         self.summary = updated
         del self.recent[: self.batch]
