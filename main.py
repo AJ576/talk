@@ -22,7 +22,7 @@ from storage import AppendLog
 
 
 def main():
-    client = OllamaClient(config.OLLAMA_URL)
+    client = OllamaClient(config.OLLAMA_URL, config.OLLAMA_TIMEOUT)
     summarizer = Summarizer(
         client,
         config.SUMMARIZER_MODEL,

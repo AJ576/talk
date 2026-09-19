@@ -10,8 +10,9 @@ class LLMError(Exception):
 
 
 class OllamaClient:
-    def __init__(self, url):
+    def __init__(self, url, timeout=600):
         self.url = url
+        self.timeout = timeout
 
     def chat(self, model, messages, temperature=0.8, max_tokens=None, on_token=None):
         """Return the model's full reply. If on_token is given, stream tokens to it."""
@@ -28,7 +29,7 @@ class OllamaClient:
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 if not stream:
                     return json.loads(resp.read())["message"]["content"]
 
@@ -49,3 +50,10 @@ class OllamaClient:
             raise LLMError(f"Ollama returned {e.code} for model '{model}': {body}") from e
         except urllib.error.URLError as e:
             raise LLMError(f"Could not reach Ollama at {self.url}: {e.reason}") from e
+        except TimeoutError as e:
+            raise LLMError(
+                f"Model '{model}' gave no response for {self.timeout}s "
+                "(usually the machine is short on RAM or running on CPU)"
+            ) from e
+        except (OSError, ValueError, KeyError) as e:
+            raise LLMError(f"Bad or interrupted response from Ollama: {e!r}") from e

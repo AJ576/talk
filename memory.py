@@ -14,6 +14,8 @@ from prompts import build_summarizer_messages
 # because most chat models expect the first message to come from the "user".
 CONTINUATION_CUE = "(the conversation continues)"
 
+RETRY_AFTER_TURNS = 2  # turns to wait before retrying a failed condense
+
 _PREAMBLE = re.compile(r"^\s*here('s| is| are)[^\n]*:\s*\n", re.IGNORECASE)
 
 
@@ -33,7 +35,12 @@ class Summarizer:
     def condense(self, previous_summary, turns):
         transcript = "\n".join(f"{t.speaker}: {t.text}" for t in turns)
         messages = build_summarizer_messages(previous_summary, transcript, self.max_words)
-        result = self.client.chat(self.model, messages, temperature=self.temperature)
+        result = self.client.chat(
+            self.model,
+            messages,
+            temperature=self.temperature,
+            max_tokens=int(self.max_words * 2),  # ~1.4 tokens/word, with headroom
+        )
         return _PREAMBLE.sub("", result).strip()
 
 
@@ -46,6 +53,7 @@ class ConversationMemory:
         self.batch = condense_batch
         self.summary = ""
         self.recent = []
+        self._skip = 0
 
     def add(self, turn):
         """Record a turn. Returns True if the summary was just updated."""
@@ -53,18 +61,26 @@ class ConversationMemory:
         if len(self.recent) < self.max_recent:
             return False
 
+        if self._skip:
+            self._skip -= 1  # waiting a few turns after a failed attempt
+        elif self._condense():
+            return True
+        else:
+            self._skip = RETRY_AFTER_TURNS
+
+        # If condensing keeps failing, don't let the verbatim window grow forever.
+        if len(self.recent) > self.max_recent * 2:
+            del self.recent[: self.batch]
+        return False
+
+    def _condense(self):
         try:
             updated = self.summarizer.condense(self.summary, self.recent[: self.batch])
         except LLMError as e:
-            print(f"  [summarizer failed: {e}]")
-            updated = ""
-
-        if not updated:
-            # Keep the raw turns and retry next turn, but never grow forever.
-            if len(self.recent) > self.max_recent * 2:
-                del self.recent[: self.batch]
+            print(f"  [summarizer failed: {e}; retrying in {RETRY_AFTER_TURNS} turns]")
             return False
-
+        if not updated:
+            return False
         self.summary = updated
         del self.recent[: self.batch]
         return True

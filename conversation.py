@@ -4,6 +4,7 @@ import re
 import time
 
 import config
+from llm import LLMError
 from memory import Turn
 from prompts import build_speaker_prompt
 from storage import stamp
@@ -52,6 +53,7 @@ class Conversation:
 
         turn_no = 0
         empty_streak = 0
+        error_streak = 0
 
         while config.MAX_TURNS is None or turn_no < config.MAX_TURNS:
             speaker = self.personas[turn_no % 2]
@@ -65,13 +67,25 @@ class Conversation:
             ]
 
             print(f"{speaker.name}: ", end="", flush=True)
-            raw = self.client.chat(
-                speaker.model,
-                [{"role": "system", "content": system}] + history,
-                temperature=config.SPEAKER_TEMPERATURE,
-                max_tokens=config.REPLY_MAX_TOKENS,
-                on_token=lambda t: print(t, end="", flush=True),
-            )
+            try:
+                raw = self.client.chat(
+                    speaker.model,
+                    [{"role": "system", "content": system}] + history,
+                    temperature=config.SPEAKER_TEMPERATURE,
+                    max_tokens=config.REPLY_MAX_TOKENS,
+                    on_token=lambda t: print(t, end="", flush=True),
+                )
+            except LLMError as e:
+                error_streak += 1
+                if error_streak >= config.MAX_CONSECUTIVE_ERRORS:
+                    raise
+                print(
+                    f"\n  [{e}]\n  [retrying in {config.RETRY_WAIT_SECONDS}s "
+                    f"({error_streak}/{config.MAX_CONSECUTIVE_ERRORS})]\n"
+                )
+                time.sleep(config.RETRY_WAIT_SECONDS)
+                continue
+            error_streak = 0
             print("\n")
 
             text = clean_reply(raw, speaker.name)
