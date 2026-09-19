@@ -4,8 +4,8 @@
 OLLAMA_URL = "http://localhost:11434/api/chat"
 
 # --- Models (any models you've pulled with `ollama pull`) ----------------------
-MODEL_A = "gemma4:12b"          # speaks as the first persona
-MODEL_B = "gemma4:12b"           # speaks as the second persona
+MODEL_A = "llama3.2"          # speaks as the first persona
+MODEL_B = "llama3.2"          # speaks as the second persona
 SUMMARIZER_MODEL = "llama3.2" # third model: only condenses, never chats
 
 # --- Memory / condensing -------------------------------------------------------

@@ -11,13 +11,41 @@ from storage import stamp
 
 _ACTION = re.compile(r"\*[^*\n]{1,80}\*")
 
+# Stage directions like "(nodding)" or "(laughs)". Prompts alone don't stop small
+# models from producing these, and the other model then copies the habit.
+_LEADING_PAREN = re.compile(r"^\([^()\n]{1,40}\)\s*")
+_GESTURE = re.compile(
+    r"\([^()\n]{0,30}(?:laugh|smil|nod|paus|sigh|lean|grin|chuckl|shrug|glanc|beam"
+    r"|eyebrow|thoughtful|excite|enthusias|vigorous)[^()\n]{0,30}\)\s*",
+    re.IGNORECASE,
+)
+
+# Agreement tics that make two models spiral into mutual flattery.
+_FILLER_OPENER = re.compile(
+    r"^(?:(?:ah|oh|ha)[,!.]?\s+)?(?:exactly|absolutely|precisely|totally|definitely|indeed)\b[!,.]?\s*"
+    r"|^(?:ah|oh)[,!.]?\s+(?:yes|yeah)\b[!,.]?\s*",
+    re.IGNORECASE,
+)
+_PRAISE = re.compile(
+    r"(?:^|(?<=[.!?] ))(?:and |but )?i (?:really |just )?love (?:what|how|the way|that) you[^.!?]*[.!?]\s*",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 
 def clean_reply(text, name):
-    """Strip things models like to add: 'Name:' prefixes, *actions*, wrapping quotes."""
+    """Strip habits models fall into: 'Name:' prefixes, stage directions, filler
+    agreement openers, praise for the other person, and wrapping quotes."""
     text = text.strip()
     text = re.sub(rf"^{re.escape(name)}\s*:\s*", "", text, flags=re.IGNORECASE)
     text = _ACTION.sub("", text)
-    text = text.strip()
+    text = _GESTURE.sub("", text)
+    for _ in range(3):
+        stripped = _FILLER_OPENER.sub("", _LEADING_PAREN.sub("", text.strip()), count=1)
+        if stripped == text:
+            break
+        text = stripped
+    text = _PRAISE.sub("", text).strip()
+    text = text[:1].upper() + text[1:]
     if len(text) > 1 and text[0] == '"' and text[-1] == '"' and text.count('"') == 2:
         text = text[1:-1].strip()  # the whole reply was wrapped in quotes
     text = re.sub(r"[ \t]+", " ", text)
