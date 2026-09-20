@@ -8,14 +8,15 @@ import re
 from dataclasses import dataclass
 
 from llm import LLMError
-from prompts import build_summarizer_messages
+from prompts import build_shrink_messages, build_summarizer_messages
 
 # Used when the verbatim window happens to begin with the speaker's own line,
 # because most chat models expect the first message to come from the "user".
 CONTINUATION_CUE = "(the conversation continues)"
 
 RETRY_AFTER_TURNS = 2  # turns to wait before retrying a failed condense
-MAX_OVERSHOOT = 1.5    # a summary this many times over the word limit is rejected
+MAX_SHRINK_PASSES = 3  # how many times an over-long summary is re-summarized
+SHRINK_TARGET = 0.8    # each pass aims below the limit, so the next update has room
 
 _PREAMBLE = re.compile(r"^\s*here('s| is| are)[^\n]*:\s*\n", re.IGNORECASE)
 # Everything after the last sentence end or line break (a cut-off fragment).
@@ -28,12 +29,37 @@ class Turn:
     text: str
 
 
+def _trim_to_words(text, limit):
+    """Last resort: keep whole lines from the top until the limit is reached."""
+    kept, count = [], 0
+    for line in text.splitlines():
+        n = len(line.split())
+        if count + n > limit:
+            break
+        kept.append(line)
+        count += n
+    if kept:
+        return "\n".join(kept).rstrip()
+    cut = " ".join(text.split()[:limit])  # a single enormous line
+    return _INCOMPLETE_TAIL.sub("", cut).rstrip() or cut
+
+
 class Summarizer:
     def __init__(self, client, model, max_words, temperature):
         self.client = client
         self.model = model
         self.max_words = max_words
         self.temperature = temperature
+
+    def _clean(self, result):
+        text = _PREAMBLE.sub("", result.text).strip()
+        if result.truncated:
+            # Hit the token limit mid-sentence: keep only the complete part, so a
+            # broken fragment never gets stored and fed into every later summary.
+            text = _INCOMPLETE_TAIL.sub("", text).rstrip()
+        if not text:
+            raise LLMError("summarizer returned nothing usable")
+        return text
 
     def condense(self, previous_summary, turns):
         transcript = "\n".join(f"{t.speaker}: {t.text}" for t in turns)
@@ -42,22 +68,39 @@ class Summarizer:
             self.model,
             messages,
             temperature=self.temperature,
-            max_tokens=int(self.max_words * 2),  # ~1.4 tokens/word, with headroom
+            # Generous: an over-long summary gets compressed below, so it's better
+            # to let the model finish than to cut it off mid-thought.
+            max_tokens=int(self.max_words * 3),
         )
-        text = _PREAMBLE.sub("", result.text).strip()
+        return self._fit(self._clean(result))
 
-        if result.truncated:
-            # Hit the token limit mid-sentence: keep only the complete part, so a
-            # broken fragment never gets stored and fed into every later summary.
-            text = _INCOMPLETE_TAIL.sub("", text).rstrip()
-        if not text:
-            raise LLMError("summarizer returned nothing usable")
-
-        words = len(text.split())
-        if words > self.max_words * MAX_OVERSHOOT:
-            raise LLMError(
-                f"summary came back at {words} words (limit {self.max_words})"
-            )
+    def _fit(self, text):
+        """If the notes came back over the limit, summarize the notes themselves
+        into something smaller (up to a few passes). Never rejects: if compressing
+        fails or makes no progress, the notes are trimmed instead."""
+        for attempt in range(1, MAX_SHRINK_PASSES + 1):
+            words = len(text.split())
+            if words <= self.max_words:
+                return text
+            print(f"  [summary is {words} words (limit {self.max_words}); "
+                  f"compressing, pass {attempt}]")
+            try:
+                result = self.client.chat(
+                    self.model,
+                    build_shrink_messages(text, int(self.max_words * SHRINK_TARGET)),
+                    temperature=self.temperature,
+                    max_tokens=int(self.max_words * 2),
+                )
+                shorter = self._clean(result)
+            except LLMError as e:
+                print(f"  [compressing failed: {e}]")
+                break
+            if len(shorter.split()) >= words:
+                break  # no progress; more passes would just repeat this
+            text = shorter
+        if len(text.split()) > self.max_words:
+            print(f"  [still over the limit; trimming to {self.max_words} words]")
+            text = _trim_to_words(text, self.max_words)
         return text
 
 

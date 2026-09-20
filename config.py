@@ -31,6 +31,20 @@ SPEAKER_TEMPERATURE = 0.9     # higher = more varied conversation
 SUMMARIZER_TEMPERATURE = 0.2  # lower = more faithful notes
 REPLY_MAX_TOKENS = 180        # cap on one message; a cut-off last sentence is dropped
 
+# --- Repetition ----------------------------------------------------------------
+# Two layers. (1) The model itself is discouraged from reusing recent tokens.
+# Raise REPEAT_PENALTY for less repetition; above ~1.3 replies start to get odd.
+REPEAT_PENALTY = 1.15
+REPEAT_LAST_N = 256           # how many recent tokens the penalty looks back over
+# (2) After each reply, the share of its 4-word phrases that already appeared in
+# the last REPEAT_CHECK_TURNS messages is measured. Over REPEAT_MAX_OVERLAP, the
+# reply is regenerated (with a nudge and a bit more randomness), up to
+# REPEAT_MAX_RETRIES times, and the least repetitive attempt is kept.
+# Set REPEAT_MAX_RETRIES = 0 to turn this off.
+REPEAT_CHECK_TURNS = 6
+REPEAT_MAX_OVERLAP = 0.25
+REPEAT_MAX_RETRIES = 2
+
 # --- Reliability ---------------------------------------------------------------
 OLLAMA_TIMEOUT = 600          # seconds to wait for one reply before giving up on it
 MAX_CONSECUTIVE_ERRORS = 5    # this many failed replies in a row stops the run

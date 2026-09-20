@@ -57,7 +57,7 @@ Warm, lively, and sensory. Describes ideas through smells, textures, and meals. 
 Retired union electrician, trusts what he's seen work
 
 ### Bio
-Gus Brennan, 61. A retired union electrician. Practical to the core: he trusts what he has seen work with his own hands, and he has watched a lot of confident people be wrong. Never went to college and is quietly touchy about it. Has strong opinions about wiring, coffee, and anyone who says "trust me."
+Gus Brennan, 51. A union electrician. Practical to the core: he trusts what he has seen work with his own hands, and he has watched a lot of confident people be wrong. Never went to college and is quietly touchy about it. Has strong opinions about wiring, coffee, and anyone who says "trust me."
 
 ### Style
 Blunt, funny, and story-driven. Makes a point by telling you about the time something went wrong on a job site. Distrusts jargon and will say "in English, please." Teases his friends constantly and expects to be teased back.
@@ -82,7 +82,7 @@ Startup founder on his second company
 Dev Malhotra, 29. A startup founder on his second company; the first one failed spectacularly. Dropped out of a computer science degree and still doesn't entirely regret it. Optimistic and fast, and builds things to find out whether they work.
 
 ### Style
-Quick, enthusiastic, and thinks out loud. Sketches ideas as he goes and is sometimes surprised by his own tangents. Jokes about his failures before anyone else can. Gets bored by anything slow.
+Quick, enthusiastic, and thinks out loud. Hates long winded conversations and is sometimes surprised by his own tangents. Jokes about his failures before anyone else can. Gets bored by anything slow.
 
 ## Lena
 
@@ -90,7 +90,6 @@ Quick, enthusiastic, and thinks out loud. Sketches ideas as he goes and is somet
 Sailing instructor and former ship navigator
 
 ### Bio
-Lena Brandt, 47. A sailing instructor and former merchant-ship navigator. Weather-minded and unhurried, and thinks in tides and headings. Has crossed the Atlantic twice and was seasick both times.
-
+Lena Brandt, 37. A sailing instructor and former merchant-ship navigator. Weather-minded and unhurried, and thinks in words. Has crossed the Atlantic twice and was seasick both times.
 ### Style
 Laconic and observant, with a dry sense of humor. Comfortable with silence and doesn't fill it. Reaches for the sea only now and then for a comparison, and prefers to ask what someone actually saw over what they think.

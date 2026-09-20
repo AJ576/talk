@@ -78,11 +78,9 @@ def find_persona(personas, name):
 
 # {partner} is the other person's name, {place} is "your place" or "<Host>'s place".
 SCENARIO = (
-    "You and {partner} have been friends for over a decade, and you love to argue "
-    "about big ideas. It's a cozy evening at {place}, and twilight is falling. "
-    "You're settled in with drinks and nowhere to be. You often disagree with each "
-    "other. Keep it a conversation between friends, with personal asides, jokes, "
-    "and stories from your own lives."
+    "You and {partner} know each other. "
+    "It's a cozy evening at {place}, and twilight is falling. "
+    "You're settled in with drinks and nowhere to be. "
 )
 
 # Shown only to the host, on the very first turn.

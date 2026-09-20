@@ -34,13 +34,16 @@ class OllamaClient:
             "(usually the machine is short on RAM or running on CPU)"
         )
 
-    def chat(self, model, messages, temperature=0.8, max_tokens=None, on_token=None):
+    def chat(self, model, messages, temperature=0.8, max_tokens=None, on_token=None,
+             extra_options=None):
         """Return a Reply. If on_token is given, stream tokens to it as they arrive."""
         options = {"temperature": temperature}
         if max_tokens:
             options["num_predict"] = max_tokens
         if self.num_ctx:
             options["num_ctx"] = self.num_ctx
+        if extra_options:
+            options.update(extra_options)  # e.g. repeat_penalty
         stream = on_token is not None
 
         payload = json.dumps(

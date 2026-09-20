@@ -6,7 +6,7 @@ import time
 import config
 from llm import LLMError
 from memory import Turn
-from prompts import build_speaker_prompt
+from prompts import REPEAT_NUDGE, build_speaker_prompt
 from storage import stamp
 
 # Filler openers that make two models spiral into mutual flattery. Only matched
@@ -60,6 +60,23 @@ def _drop_cut_off_tail(text):
     return m.group(1) if m else text
 
 
+def _phrases(text, n=4):
+    words = re.findall(r"[a-z']+", text.lower())
+    return {tuple(words[i:i + n]) for i in range(len(words) - n + 1)}
+
+
+def repetition_score(text, recent_texts):
+    """Share (0..1) of this reply's 4-word phrases that already appeared in the
+    recent messages, by either speaker. Very short replies score 0."""
+    mine = _phrases(text)
+    if len(mine) < 8:
+        return 0.0
+    seen = set()
+    for t in recent_texts:
+        seen |= _phrases(t)
+    return len(mine & seen) / len(mine)
+
+
 class Conversation:
     def __init__(
         self, client, models, personas, memory, scenario_fn, opener,
@@ -73,6 +90,43 @@ class Conversation:
         self.opener = opener              # contains {partner}
         self.transcript_log = transcript_log  # append-only: every message
         self.memory_log = memory_log          # append-only: every summary update
+
+    def _generate(self, idx, speaker, system, history):
+        """Produce one cleaned reply. If it reuses too much recent wording, try
+        again (nudged, slightly hotter) and keep the least repetitive attempt."""
+        recent = [t.text for t in self.memory.recent[-config.REPEAT_CHECK_TURNS:]]
+        options = {
+            "repeat_penalty": config.REPEAT_PENALTY,
+            "repeat_last_n": config.REPEAT_LAST_N,
+        }
+        temperature = config.SPEAKER_TEMPERATURE
+        best_text, best_score = "", 2.0
+
+        for attempt in range(config.REPEAT_MAX_RETRIES + 1):
+            prompt = system if attempt == 0 else system + "\n\n" + REPEAT_NUDGE
+            print(f"{speaker.name}: ", end="", flush=True)
+            reply = self.client.chat(
+                self.models[idx],
+                [{"role": "system", "content": prompt}] + history,
+                temperature=temperature,
+                max_tokens=config.REPLY_MAX_TOKENS,
+                on_token=lambda t: print(t, end="", flush=True),
+                extra_options=options,
+            )
+            print("\n")
+
+            text = clean_reply(reply.text, speaker.name, reply.truncated)
+            if not text:
+                return best_text  # empty; the caller counts these
+            score = repetition_score(text, recent)
+            if score < best_score:
+                best_text, best_score = text, score
+            if score <= config.REPEAT_MAX_OVERLAP:
+                return text
+            if attempt < config.REPEAT_MAX_RETRIES:
+                print(f"  [{score:.0%} of that reused recent wording; trying again]\n")
+                temperature = min(temperature + 0.1, 1.3)
+        return best_text
 
     def run(self):
         a, b = self.personas
@@ -97,15 +151,8 @@ class Conversation:
                 {"role": "user", "content": self.opener.format(partner=partner.name)}
             ]
 
-            print(f"{speaker.name}: ", end="", flush=True)
             try:
-                reply = self.client.chat(
-                    self.models[idx],
-                    [{"role": "system", "content": system}] + history,
-                    temperature=config.SPEAKER_TEMPERATURE,
-                    max_tokens=config.REPLY_MAX_TOKENS,
-                    on_token=lambda t: print(t, end="", flush=True),
-                )
+                text = self._generate(idx, speaker, system, history)
             except LLMError as e:
                 error_streak += 1
                 if not e.retryable or error_streak >= config.MAX_CONSECUTIVE_ERRORS:
@@ -117,9 +164,7 @@ class Conversation:
                 time.sleep(config.RETRY_WAIT_SECONDS)
                 continue
             error_streak = 0
-            print("\n")
 
-            text = clean_reply(reply.text, speaker.name, reply.truncated)
             if not text:
                 empty_streak += 1
                 if empty_streak >= 3:
