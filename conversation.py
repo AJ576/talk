@@ -6,7 +6,7 @@ import time
 import config
 from llm import LLMError
 from memory import Turn
-from prompts import REPEAT_NUDGE, build_speaker_prompt
+from prompts import REPEAT_NUDGE, build_script_message, build_speaker_prompt
 from storage import stamp
 
 # Filler openers that make two models spiral into mutual flattery. Only matched
@@ -22,15 +22,40 @@ _PRAISE = re.compile(
 )
 
 
-def clean_reply(text, name, truncated=False):
-    """Strip habits models fall into: 'Name:' prefixes, filler agreement openers,
-    praise for the other person, and wrapping quotes. Actions like *sighs* and
-    (laughs) are left alone.
+_BOLD = re.compile(r"\*\*([^*\n]+)\*\*")   # **emphasis** -> emphasis
+_ACTION = re.compile(r"\*[^*\n]+\*")        # *sighs*, *leans back and laughs*
+_OPEN_ACTION = re.compile(r"\*[^*\n]*$")     # *sighs   (cut off before the closing *)
+
+
+def strip_actions(text):
+    """Remove *action* stage directions and any stray asterisks. **Bold** is
+    unwrapped, not deleted. A single *emphasized* word is removed too, because
+    it looks exactly like an action."""
+    text = _BOLD.sub(r"\1", text)
+    cleaned = _ACTION.sub("", text)
+    cleaned = _OPEN_ACTION.sub("", cleaned)
+    cleaned = cleaned.replace("*", "")
+    if cleaned == text:
+        return text
+    cleaned = re.sub(r"[ \t]+([,.;:!?])", r"\1", cleaned)  # "well , fine" -> "well, fine"
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return cleaned.lstrip(" ,;:").strip()
+
+
+def clean_reply(text, name, truncated=False, partner=None):
+    """Strip habits models fall into: 'Name:' prefixes, *action* stage directions,
+    filler agreement openers, praise for the other person, and wrapping quotes.
+    If `partner` is given, anything from a new "Partner:" line onward is cut
+    (a script-mode model writing the other side).
 
     `truncated` says the model hit the token limit; only then is a dangling
     half-sentence at the end dropped."""
     text = text.strip()
     text = re.sub(rf"^{re.escape(name)}\s*:\s*", "", text, flags=re.IGNORECASE)
+    if partner:
+        text = re.split(rf"\n\s*{re.escape(partner)}\s*:", text, maxsplit=1,
+                        flags=re.IGNORECASE)[0].strip()
+    text = strip_actions(text)  # before the opener check, so "*nods* Exactly, ..." is caught
 
     for _ in range(3):
         stripped = _FILLER_OPENER.sub("", text, count=1).strip()
@@ -47,8 +72,8 @@ def clean_reply(text, name, truncated=False):
 
 
 # A reply ends cleanly on sentence punctuation (optionally followed by a closing
-# quote/bracket/asterisk) or on a finished *action*.
-_ENDS_CLEANLY = re.compile(r"(?:[.!?\u2026][\"')\]*]*|\*[^*\n]{1,80}\*)$")
+# quote or bracket).
+_ENDS_CLEANLY = re.compile(r"[.!?\u2026][\"')\]]*$")
 _TRAILING_FRAGMENT = re.compile(r"^(.*[.!?\u2026][\"')\]*]*)\s+[^.!?\u2026]*$", re.DOTALL)
 
 
@@ -91,18 +116,26 @@ class Conversation:
         self.transcript_log = transcript_log  # append-only: every message
         self.memory_log = memory_log          # append-only: every summary update
 
-    def _generate(self, idx, speaker, system, history):
+    def _generate(self, idx, speaker, partner, system, history):
         """Produce one cleaned reply. If it reuses too much recent wording, try
         again (nudged, slightly hotter) and keep the least repetitive attempt."""
+        enabled = config.REPEAT_REMOVER
         recent = [t.text for t in self.memory.recent[-config.REPEAT_CHECK_TURNS:]]
-        options = {
-            "repeat_penalty": config.REPEAT_PENALTY,
-            "repeat_last_n": config.REPEAT_LAST_N,
-        }
+        if enabled:
+            options = {
+                "repeat_penalty": config.REPEAT_PENALTY,
+                "repeat_last_n": config.REPEAT_LAST_N,
+            }
+        else:
+            options = {"repeat_penalty": 1.0}  # 1.0 = no penalty at all
+        max_retries = config.REPEAT_MAX_RETRIES if enabled else 0
+        if config.SCRIPT_MODE:
+            # Don't let the model carry on and write the other person's lines.
+            options["stop"] = [f"\n{partner.name}:"]
         temperature = config.SPEAKER_TEMPERATURE
         best_text, best_score = "", 2.0
 
-        for attempt in range(config.REPEAT_MAX_RETRIES + 1):
+        for attempt in range(max_retries + 1):
             prompt = system if attempt == 0 else system + "\n\n" + REPEAT_NUDGE
             print(f"{speaker.name}: ", end="", flush=True)
             reply = self.client.chat(
@@ -115,15 +148,17 @@ class Conversation:
             )
             print("\n")
 
-            text = clean_reply(reply.text, speaker.name, reply.truncated)
+            text = clean_reply(reply.text, speaker.name, reply.truncated, partner.name)
             if not text:
                 return best_text  # empty; the caller counts these
+            if not enabled:
+                return text
             score = repetition_score(text, recent)
             if score < best_score:
                 best_text, best_score = text, score
             if score <= config.REPEAT_MAX_OVERLAP:
                 return text
-            if attempt < config.REPEAT_MAX_RETRIES:
+            if attempt < max_retries:
                 print(f"  [{score:.0%} of that reused recent wording; trying again]\n")
                 temperature = min(temperature + 0.1, 1.3)
         return best_text
@@ -143,16 +178,25 @@ class Conversation:
             speaker = self.personas[idx]
             partner = self.personas[1 - idx]
 
+            # Each speaker gets their own memory of the older conversation.
             system = build_speaker_prompt(
                 speaker, partner.name, self.scenario_fn(speaker, partner),
-                self.memory.summary,
+                self.memory.summary_for(speaker.name),
             )
-            history = self.memory.chat_view(speaker.name) or [
-                {"role": "user", "content": self.opener.format(partner=partner.name)}
-            ]
+            if not self.memory.recent:
+                history = [{"role": "user", "content": self.opener.format(partner=partner.name)}]
+            elif config.SCRIPT_MODE:
+                history = [{
+                    "role": "user",
+                    "content": build_script_message(
+                        self.memory.recent, speaker.name, partner.name
+                    ),
+                }]
+            else:
+                history = self.memory.chat_view(speaker.name)
 
             try:
-                text = self._generate(idx, speaker, system, history)
+                text = self._generate(idx, speaker, partner, system, history)
             except LLMError as e:
                 error_streak += 1
                 if not e.retryable or error_streak >= config.MAX_CONSECUTIVE_ERRORS:
@@ -177,12 +221,16 @@ class Conversation:
             turn_no += 1
 
             if self.memory.add(Turn(speaker.name, text)):
-                words = len(self.memory.summary.split())
-                print(f"  [memory condensed: summary is now {words} words]\n")
-                self.memory_log.write(
-                    f"--- Memory update after message {turn_no} | {stamp()} ---\n"
-                    f"{self.memory.summary}\n\n"
+                sizes = ", ".join(
+                    f"{p.name} {len(self.memory.summary_for(p.name).split())} words"
+                    for p in self.personas
                 )
+                print(f"  [memory condensed: {sizes}]\n")
+                for p in self.personas:
+                    self.memory_log.write(
+                        f"--- {p.name}'s memory after message {turn_no} | {stamp()} ---\n"
+                        f"{self.memory.summary_for(p.name)}\n\n"
+                    )
 
             if config.TURN_DELAY_SECONDS:
                 time.sleep(config.TURN_DELAY_SECONDS)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Two personas chat forever; a third model keeps the running memory condensed.
+"""Two personas chat forever; a third model keeps each one's own memory condensed.
 
 Setup:
     ollama pull llama3.2      (or change the models in config.py)
@@ -13,7 +13,8 @@ Personas live in personas.md. Add or edit people there.
 
 Output (both append-only, written to disk in real time, never overwritten):
     transcript.txt   every message
-    memory.txt       every condensed-summary update; the last entry is the latest
+    memory.txt       both people's condensed notes after every update; the last
+                     entry for each person is their latest
 """
 
 import argparse
@@ -108,8 +109,12 @@ def main():
         config.SUMMARIZER_MODEL,
         config.SUMMARY_MAX_WORDS,
         config.SUMMARIZER_TEMPERATURE,
+        config.MEMORY_FIRST_PERSON,
     )
-    memory = ConversationMemory(summarizer, config.MAX_RECENT_TURNS, config.CONDENSE_BATCH)
+    memory = ConversationMemory(
+        summarizer, config.MAX_RECENT_TURNS, config.CONDENSE_BATCH,
+        [p.name for p in pair],
+    )
 
     with AppendLog(config.TRANSCRIPT_PATH) as transcript_log, AppendLog(
         config.MEMORY_PATH

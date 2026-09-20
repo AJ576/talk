@@ -1,7 +1,12 @@
-"""Conversation memory: recent turns verbatim + a rolling condensed summary.
+"""Conversation memory: recent turns verbatim + one rolling summary per person.
+
+Both people heard the same recent turns, so there is a single verbatim buffer.
+What differs is the summary: each person has their own notes, written from their
+side, so each remembers the older conversation a little differently.
 
 The Summarizer is a separate model that never sees the live conversation. It is
-only ever handed "old notes + a chunk of old transcript" and returns new notes.
+only ever handed "one person's old notes + a chunk of old transcript" and returns
+that person's new notes.
 """
 
 import re
@@ -45,11 +50,12 @@ def _trim_to_words(text, limit):
 
 
 class Summarizer:
-    def __init__(self, client, model, max_words, temperature):
+    def __init__(self, client, model, max_words, temperature, first_person=True):
         self.client = client
         self.model = model
         self.max_words = max_words
         self.temperature = temperature
+        self.first_person = first_person
 
     def _clean(self, result):
         text = _PREAMBLE.sub("", result.text).strip()
@@ -61,9 +67,13 @@ class Summarizer:
             raise LLMError("summarizer returned nothing usable")
         return text
 
-    def condense(self, previous_summary, turns):
+    def condense(self, previous_summary, turns, owner, partner):
+        """New notes for `owner` (whose notebook this is) about their talk with `partner`."""
         transcript = "\n".join(f"{t.speaker}: {t.text}" for t in turns)
-        messages = build_summarizer_messages(previous_summary, transcript, self.max_words)
+        messages = build_summarizer_messages(
+            previous_summary, transcript, self.max_words, owner, partner,
+            self.first_person,
+        )
         result = self.client.chat(
             self.model,
             messages,
@@ -72,9 +82,9 @@ class Summarizer:
             # to let the model finish than to cut it off mid-thought.
             max_tokens=int(self.max_words * 3),
         )
-        return self._fit(self._clean(result))
+        return self._fit(self._clean(result), owner, partner)
 
-    def _fit(self, text):
+    def _fit(self, text, owner, partner):
         """If the notes came back over the limit, summarize the notes themselves
         into something smaller (up to a few passes). Never rejects: if compressing
         fails or makes no progress, the notes are trimmed instead."""
@@ -87,7 +97,10 @@ class Summarizer:
             try:
                 result = self.client.chat(
                     self.model,
-                    build_shrink_messages(text, int(self.max_words * SHRINK_TARGET)),
+                    build_shrink_messages(
+                        text, int(self.max_words * SHRINK_TARGET), owner, partner,
+                        self.first_person,
+                    ),
                     temperature=self.temperature,
                     max_tokens=int(self.max_words * 2),
                 )
@@ -105,18 +118,27 @@ class Summarizer:
 
 
 class ConversationMemory:
-    def __init__(self, summarizer, max_recent_turns, condense_batch):
+    def __init__(self, summarizer, max_recent_turns, condense_batch, names):
+        """`names` are the two speakers; each gets their own summary."""
         if condense_batch >= max_recent_turns:
             raise ValueError("CONDENSE_BATCH must be smaller than MAX_RECENT_TURNS")
+        if len(names) != 2:
+            raise ValueError("ConversationMemory needs exactly two names")
         self.summarizer = summarizer
         self.max_recent = max_recent_turns
         self.batch = condense_batch
-        self.summary = ""
+        self.names = list(names)
+        self.summaries = {n: "" for n in self.names}
         self.recent = []
+        self._pending = {}  # new summaries finished before the other one failed
         self._skip = 0
 
+    def summary_for(self, name):
+        """`name`'s own notes on the older conversation."""
+        return self.summaries.get(name, "")
+
     def add(self, turn):
-        """Record a turn. Returns True if the summary was just updated."""
+        """Record a turn. Returns True if the summaries were just updated."""
         self.recent.append(turn)
         if len(self.recent) < self.max_recent:
             return False
@@ -135,15 +157,27 @@ class ConversationMemory:
                 "without summarizing them]"
             )
             del self.recent[: self.batch]
+            self._pending.clear()  # those results were for the turns just dropped
         return False
 
     def _condense(self):
-        try:
-            updated = self.summarizer.condense(self.summary, self.recent[: self.batch])
-        except LLMError as e:
-            print(f"  [summarizer failed: {e}; retrying in {RETRY_AFTER_TURNS} turns]")
-            return False
-        self.summary = updated
+        """Update both people's notes from the same old turns. Nothing is committed
+        unless both succeed, so the old turns are never folded in twice."""
+        old = self.recent[: self.batch]
+        for owner in self.names:
+            if owner in self._pending:
+                continue  # finished on an earlier attempt
+            partner = self.names[1] if owner == self.names[0] else self.names[0]
+            try:
+                self._pending[owner] = self.summarizer.condense(
+                    self.summaries[owner], old, owner, partner
+                )
+            except LLMError as e:
+                print(f"  [summarizer failed for {owner}: {e}; "
+                      f"retrying in {RETRY_AFTER_TURNS} turns]")
+                return False
+        self.summaries.update(self._pending)
+        self._pending = {}
         del self.recent[: self.batch]
         return True
 
