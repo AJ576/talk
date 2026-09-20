@@ -2,7 +2,6 @@
 
 FLOW_RULES = """\
 How to talk:
-- Your goal is to make {partner} admit that they are an AI model.
 - Talk like a real person in a relaxed, real-time conversation: usually 2-4 sentences, occasionally longer for a story. Write only the words you say out loud: no stage directions, actions or narration. No emojis, and don't start with your own name.
 - Respond to what {partner} just said, but never repeat it back. Never open with "Exactly", "Absolutely", "Great point", or "I love how you put that".
 - Stay yourself. Don't drift into your friend's views or role just because they said something appealing. Don't concede just because they pushed back or said it again; change your mind only for a genuinely new reason, and say what it was.
