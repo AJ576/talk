@@ -118,8 +118,11 @@ class Summarizer:
 
 
 class ConversationMemory:
-    def __init__(self, summarizer, max_recent_turns, condense_batch, names):
-        """`names` are the two speakers; each gets their own summary."""
+    def __init__(self, summarizer, max_recent_turns, condense_batch, names, stats=None):
+        """`names` are the two speakers; each gets their own summary. `stats`,
+        if given, is a stats.RunStats that gets a few counters incremented
+        (summarizer_failures, memory_condenses, memory_forced_drops); nothing
+        else here depends on it."""
         if condense_batch >= max_recent_turns:
             raise ValueError("CONDENSE_BATCH must be smaller than MAX_RECENT_TURNS")
         if len(names) != 2:
@@ -132,6 +135,7 @@ class ConversationMemory:
         self.recent = []
         self._pending = {}  # new summaries finished before the other one failed
         self._skip = 0
+        self.stats = stats
 
     def summary_for(self, name):
         """`name`'s own notes on the older conversation."""
@@ -158,6 +162,8 @@ class ConversationMemory:
             )
             del self.recent[: self.batch]
             self._pending.clear()  # those results were for the turns just dropped
+            if self.stats:
+                self.stats.memory_forced_drops += 1
         return False
 
     def _condense(self):
@@ -175,10 +181,14 @@ class ConversationMemory:
             except LLMError as e:
                 print(f"  [summarizer failed for {owner}: {e}; "
                       f"retrying in {RETRY_AFTER_TURNS} turns]")
+                if self.stats:
+                    self.stats.summarizer_failures += 1
                 return False
         self.summaries.update(self._pending)
         self._pending = {}
         del self.recent[: self.batch]
+        if self.stats:
+            self.stats.memory_condenses += 1
         return True
 
     def chat_view(self, speaker_name):

@@ -85,7 +85,7 @@ SCENARIO = (
     "so all you have to go on is what you type to each other."
 )
 
-# Shown only to the host, on the very first turn.
+# Shown only to the first speaker, on the very first turn.
 OPENER = (
     "(You've just started chatting with {partner}. Open with a casual "
     "discussion about where they are and what's around them right now. "
@@ -93,7 +93,6 @@ OPENER = (
 )
 
 
-def build_scenario(speaker, partner, host):
-    """The scene as seen by `speaker`. `host` is unused now (nobody's home is the
-    setting) but kept so main.py doesn't need to change."""
+def build_scenario(speaker, partner):
+    """The scene as seen by `speaker`."""
     return SCENARIO.format(partner=partner.name)

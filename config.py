@@ -11,8 +11,8 @@ OLLAMA_URL = "http://localhost:11434/api/chat"
 NUM_CTX = 8192
 
 # --- Models (any models you've pulled with `ollama pull`) ----------------------
-MODEL_A = "llama3.2"          # speaks as the first persona (the host)
-MODEL_B = "llama3.2"          # speaks as the second persona (the guest)
+MODEL_A = "llama3.2"          # speaks as the first persona (opens the conversation)
+MODEL_B = "llama3.2"          # speaks as the second persona (replies first)
 SUMMARIZER_MODEL = "llama3.2" # third model: only condenses, never chats
 
 # --- Personas ------------------------------------------------------------------
@@ -76,3 +76,4 @@ MAX_TURNS = None              # None = run forever (Ctrl+C to stop)
 TURN_DELAY_SECONDS = 0.0      # pause between messages, if you want it slower
 TRANSCRIPT_PATH = "transcript.txt"  # append-only: every message, fsynced as it happens
 MEMORY_PATH = "memory.txt"          # append-only: both people's summary after every update, fsynced as it happens
+STATS_PATH = "run_stats.json"       # overwritten each turn: counts of turns/retries/failures, see stats.py

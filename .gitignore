@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Run output (append-only logs and the per-run stats snapshot)
+transcript.txt
+memory.txt
+run_stats.json

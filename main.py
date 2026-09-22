@@ -5,7 +5,7 @@ Setup:
     ollama pull llama3.2      (or change the models in config.py)
 Run:
     python main.py                  pick the two personas from a menu
-    python main.py Priya Theo       skip the menu (the first name hosts, at their place)
+    python main.py Priya Theo       skip the menu (the first name opens the conversation)
     python main.py --list           show who's available
     Ctrl+C to stop.
 
@@ -15,6 +15,7 @@ Output (both append-only, written to disk in real time, never overwritten):
     transcript.txt   every message
     memory.txt       both people's condensed notes after every update; the last
                      entry for each person is their latest
+    run_stats.json   overwritten each turn: turns, retries, failures so far
 """
 
 import argparse
@@ -25,6 +26,7 @@ from conversation import Conversation
 from llm import LLMError, OllamaClient
 from memory import ConversationMemory, Summarizer
 from personas import OPENER, build_scenario, find_persona, load_personas
+from stats import RunStats, StatsLog
 from storage import AppendLog
 
 
@@ -32,7 +34,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run a conversation between two personas.")
     parser.add_argument(
         "names", nargs="*", metavar="PERSONA",
-        help="two persona names; the first is the host (the scene is at their place)",
+        help="two persona names; the first one opens the conversation",
     )
     parser.add_argument("--list", action="store_true", help="list personas and exit")
     return parser.parse_args()
@@ -74,9 +76,9 @@ def choose_personas(personas, names):
     print("Personas:\n")
     print_menu(personas)
     print()
-    host = ask("Host (the evening is at their place), number or name: ", personas)
-    guest = ask("Guest, number or name: ", personas, exclude=host)
-    return [host, guest]
+    first = ask("Who opens the chat, number or name: ", personas)
+    second = ask("Who they're chatting with, number or name: ", personas, exclude=first)
+    return [first, second]
 
 
 def main():
@@ -100,8 +102,9 @@ def main():
         pair = choose_personas(personas, args.names)
     except (KeyboardInterrupt, EOFError):
         sys.exit("\nCancelled.")
-    host, guest = pair
-    print(f"\n{host.name} is hosting {guest.name}. Ctrl+C to stop.\n")
+    first, second = pair
+    print(f"\n{first.name} and {second.name} are chatting; {first.name} opens. "
+          "Ctrl+C to stop.\n")
 
     client = OllamaClient(config.OLLAMA_URL, config.OLLAMA_TIMEOUT, config.NUM_CTX)
     summarizer = Summarizer(
@@ -111,9 +114,14 @@ def main():
         config.SUMMARIZER_TEMPERATURE,
         config.MEMORY_FIRST_PERSON,
     )
+    stats_log = StatsLog(config.STATS_PATH, RunStats(
+        speaker_a=first.name, speaker_b=second.name,
+        model_a=config.MODEL_A, model_b=config.MODEL_B,
+        summarizer_model=config.SUMMARIZER_MODEL, script_mode=config.SCRIPT_MODE,
+    ))
     memory = ConversationMemory(
         summarizer, config.MAX_RECENT_TURNS, config.CONDENSE_BATCH,
-        [p.name for p in pair],
+        [p.name for p in pair], stats=stats_log.stats,
     )
 
     with AppendLog(config.TRANSCRIPT_PATH) as transcript_log, AppendLog(
@@ -124,16 +132,20 @@ def main():
             [config.MODEL_A, config.MODEL_B],
             pair,
             memory,
-            lambda speaker, partner: build_scenario(speaker, partner, host),
+            build_scenario,
             OPENER,
             transcript_log,
             memory_log,
+            stats_log,
         )
         try:
             conversation.run()
         except KeyboardInterrupt:
             print(f"\nStopped. Saved to {config.TRANSCRIPT_PATH} and {config.MEMORY_PATH}")
+            stats_log.write()
         except (LLMError, RuntimeError) as e:
+            stats_log.stats.fatal_error = str(e)
+            stats_log.write()
             sys.exit(f"\nError: {e}\nEverything so far is saved in {config.TRANSCRIPT_PATH}.")
 
 

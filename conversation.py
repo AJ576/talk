@@ -6,7 +6,12 @@ import time
 import config
 from llm import LLMError
 from memory import Turn
-from prompts import REPEAT_NUDGE, build_script_message, build_speaker_prompt
+from prompts import (
+    REPEAT_NUDGE,
+    add_mission_reminder,
+    build_script_message,
+    build_speaker_prompt,
+)
 from storage import stamp
 
 # Filler openers that make two models spiral into mutual flattery. Only matched
@@ -27,13 +32,20 @@ _ACTION = re.compile(r"\*[^*\n]+\*")        # *sighs*, *leans back and laughs*
 _OPEN_ACTION = re.compile(r"\*[^*\n]*$")     # *sighs   (cut off before the closing *)
 
 
-def strip_actions(text):
+def strip_actions(text, truncated=False):
     """Remove *action* stage directions and any stray asterisks. **Bold** is
     unwrapped, not deleted. A single *emphasized* word is removed too, because
-    it looks exactly like an action."""
+    it looks exactly like an action.
+
+    `truncated` says the model hit the token limit. Only then is an unclosed
+    `*...` at the end treated as an action cut off mid-word and dropped. In a
+    reply the model chose to end, a lone asterisk is just a stray character
+    ("it cost 5 * 3 dollars"), and deleting everything after it would throw
+    away real content."""
     text = _BOLD.sub(r"\1", text)
     cleaned = _ACTION.sub("", text)
-    cleaned = _OPEN_ACTION.sub("", cleaned)
+    if truncated:
+        cleaned = _OPEN_ACTION.sub("", cleaned)
     cleaned = cleaned.replace("*", "")
     if cleaned == text:
         return text
@@ -42,20 +54,39 @@ def strip_actions(text):
     return cleaned.lstrip(" ,;:").strip()
 
 
+_MAX_PREFIX_STRIPS = 3  # models sometimes stack them: "Lena: Lena: hi"
+
+
+def _partner_cut(text, partner):
+    """Where the model stopped being itself and started writing `partner`'s line.
+    Returns the part before that, or "" if it never did. The label has to open a
+    new line or a new sentence, so "I told Dev: bring wine" is left alone."""
+    m = re.search(
+        rf"(?:\n\s*|(?<=[.!?\u2026])\s+){re.escape(partner)}\s*:",
+        text, flags=re.IGNORECASE,
+    )
+    return text[: m.start()].strip() if m else ""
+
+
 def clean_reply(text, name, truncated=False, partner=None):
     """Strip habits models fall into: 'Name:' prefixes, *action* stage directions,
     filler agreement openers, praise for the other person, and wrapping quotes.
-    If `partner` is given, anything from a new "Partner:" line onward is cut
-    (a script-mode model writing the other side).
+    If `partner` is given, anything from the point where "Partner:" opens a new
+    line or sentence is cut (a script-mode model writing the other side).
 
     `truncated` says the model hit the token limit; only then is a dangling
     half-sentence at the end dropped."""
-    text = text.strip()
-    text = re.sub(rf"^{re.escape(name)}\s*:\s*", "", text, flags=re.IGNORECASE)
+    # Actions come off first, so "*nods* Exactly, ..." is caught by the opener
+    # check below and "*smiles* Lena: hi" still loses its name prefix.
+    text = strip_actions(text.strip(), truncated)
     if partner:
-        text = re.split(rf"\n\s*{re.escape(partner)}\s*:", text, maxsplit=1,
-                        flags=re.IGNORECASE)[0].strip()
-    text = strip_actions(text)  # before the opener check, so "*nods* Exactly, ..." is caught
+        text = _partner_cut(text, partner) or text
+    for _ in range(_MAX_PREFIX_STRIPS):
+        stripped = re.sub(rf"^{re.escape(name)}\s*:\s*", "", text, count=1,
+                          flags=re.IGNORECASE)
+        if stripped == text:
+            break
+        text = stripped
 
     for _ in range(3):
         stripped = _FILLER_OPENER.sub("", text, count=1).strip()
@@ -64,9 +95,9 @@ def clean_reply(text, name, truncated=False, partner=None):
         text = stripped
 
     text = (_PRAISE.sub("", text).strip()) or text
-    text = text[:1].upper() + text[1:]
     if len(text) > 1 and text[0] == '"' and text[-1] == '"' and text.count('"') == 2:
         text = text[1:-1].strip()  # the whole reply was wrapped in quotes
+    text = text[:1].upper() + text[1:]  # after unwrapping, so '"this..."' gets it too
     text = re.sub(r"[ \t]+", " ", text).strip()
     return _drop_cut_off_tail(text) if truncated else text
 
@@ -83,6 +114,11 @@ def _drop_cut_off_tail(text):
         return text
     m = _TRAILING_FRAGMENT.match(text)
     return m.group(1) if m else text
+
+
+# Empty replies in a row before the run gives up (the error limit lives in
+# config; this one is a hard stop for a model that has stopped producing text).
+MAX_CONSECUTIVE_EMPTY = 3
 
 
 def _phrases(text, n=4):
@@ -105,16 +141,17 @@ def repetition_score(text, recent_texts):
 class Conversation:
     def __init__(
         self, client, models, personas, memory, scenario_fn, opener,
-        transcript_log, memory_log,
+        transcript_log, memory_log, stats_log=None,
     ):
         self.client = client
         self.models = models              # models[i] plays personas[i]
-        self.personas = personas          # personas[0] is the host and speaks first
+        self.personas = personas          # personas[0] speaks first
         self.memory = memory
         self.scenario_fn = scenario_fn    # (speaker, partner) -> scene text
         self.opener = opener              # contains {partner}
         self.transcript_log = transcript_log  # append-only: every message
         self.memory_log = memory_log          # append-only: every summary update
+        self.stats_log = stats_log            # optional stats.StatsLog; written each turn
 
     def _generate(self, idx, speaker, partner, system, history):
         """Produce one cleaned reply. If it reuses too much recent wording, try
@@ -137,7 +174,8 @@ class Conversation:
 
         for attempt in range(max_retries + 1):
             prompt = system if attempt == 0 else system + "\n\n" + REPEAT_NUDGE
-            print(f"{speaker.name}: ", end="", flush=True)
+            label = speaker.name if attempt == 0 else f"{speaker.name} (retry {attempt})"
+            print(f"{label}: ", end="", flush=True)
             reply = self.client.chat(
                 self.models[idx],
                 [{"role": "system", "content": prompt}] + history,
@@ -161,11 +199,15 @@ class Conversation:
             if attempt < max_retries:
                 print(f"  [{score:.0%} of that reused recent wording; trying again]\n")
                 temperature = min(temperature + 0.1, 1.3)
+                if self.stats_log:
+                    self.stats_log.stats.repetition_regenerations += 1
+        if enabled and self.stats_log:
+            self.stats_log.stats.repetition_still_over_limit += 1
         return best_text
 
     def run(self):
         a, b = self.personas
-        header = f"=== New session | {stamp()} | {a.name} (host) & {b.name} ===\n\n"
+        header = f"=== New session | {stamp()} | {a.name} & {b.name} ===\n\n"
         self.transcript_log.write("\n" + header)
         self.memory_log.write("\n" + header)
 
@@ -194,31 +236,62 @@ class Conversation:
                 }]
             else:
                 history = self.memory.chat_view(speaker.name)
+            # A private nudge on the last user message of this one request only:
+            # it is never written to the transcript or folded into memory.
+            history = add_mission_reminder(history, partner.name)
 
             try:
                 text = self._generate(idx, speaker, partner, system, history)
             except LLMError as e:
                 error_streak += 1
+                if self.stats_log:
+                    self.stats_log.stats.llm_errors += 1
                 if not e.retryable or error_streak >= config.MAX_CONSECUTIVE_ERRORS:
+                    if self.stats_log:
+                        self.stats_log.stats.fatal_error = str(e)
+                        self.stats_log.write()
                     raise
                 print(
                     f"\n  [{e}]\n  [retrying in {config.RETRY_WAIT_SECONDS}s "
                     f"({error_streak}/{config.MAX_CONSECUTIVE_ERRORS})]\n"
                 )
+                if self.stats_log:
+                    self.stats_log.write()
                 time.sleep(config.RETRY_WAIT_SECONDS)
                 continue
             error_streak = 0
 
             if not text:
                 empty_streak += 1
-                if empty_streak >= 3:
-                    raise RuntimeError("A model returned empty replies 3 times in a row.")
+                if self.stats_log:
+                    self.stats_log.stats.empty_replies += 1
+                if empty_streak >= MAX_CONSECUTIVE_EMPTY:
+                    message = (
+                        f"A model returned empty replies {MAX_CONSECUTIVE_EMPTY} "
+                        "times in a row."
+                    )
+                    if self.stats_log:
+                        self.stats_log.stats.fatal_error = message
+                        self.stats_log.write()
+                    raise RuntimeError(message)
+                # Retrying instantly would almost certainly produce another
+                # empty reply, so wait as long as a failed request does.
+                print(
+                    f"\n  [{speaker.name} returned nothing usable]\n"
+                    f"  [retrying in {config.RETRY_WAIT_SECONDS}s "
+                    f"({empty_streak}/{MAX_CONSECUTIVE_EMPTY})]\n"
+                )
+                if self.stats_log:
+                    self.stats_log.write()
+                time.sleep(config.RETRY_WAIT_SECONDS)
                 continue
             empty_streak = 0
 
             # Written to disk the moment the message is complete.
             self.transcript_log.write(f"{speaker.name}: {text}\n\n")
             turn_no += 1
+            if self.stats_log:
+                self.stats_log.stats.turns_completed = turn_no
 
             if self.memory.add(Turn(speaker.name, text)):
                 sizes = ", ".join(
@@ -231,6 +304,9 @@ class Conversation:
                         f"--- {p.name}'s memory after message {turn_no} | {stamp()} ---\n"
                         f"{self.memory.summary_for(p.name)}\n\n"
                     )
+
+            if self.stats_log:
+                self.stats_log.write()
 
             if config.TURN_DELAY_SECONDS:
                 time.sleep(config.TURN_DELAY_SECONDS)

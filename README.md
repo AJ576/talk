@@ -30,6 +30,7 @@ Everything runs locally. Nothing is sent anywhere except your own Ollama server.
 - [Configuration reference](#configuration-reference)
 - [File-by-file overview](#file-by-file-overview)
 - [Troubleshooting](#troubleshooting)
+- [Running the tests](#running-the-tests)
 - [Known limitations](#known-limitations)
 
 ## Quick start
@@ -340,6 +341,7 @@ Everything tunable lives in `config.py`, grouped and commented there. Summary:
 | `MAX_TURNS` | `None` | `None` = run forever (`Ctrl+C` to stop) |
 | `TURN_DELAY_SECONDS` | `0.0` | Pause between messages, if you want it slower to read |
 | `TRANSCRIPT_PATH` / `MEMORY_PATH` | `transcript.txt` / `memory.txt` | Output file locations |
+| `STATS_PATH` | `run_stats.json` | Run-progress snapshot, rewritten every turn |
 
 ## File-by-file overview
 
@@ -354,6 +356,8 @@ Everything tunable lives in `config.py`, grouped and commented there. Summary:
 | `memory.py` | `Turn`, `Summarizer` (condenses/shrinks notes via the LLM), `ConversationMemory` (verbatim buffer + per-person summaries) |
 | `llm.py` | Thin Ollama client (`OllamaClient`) and `LLMError` — swap this file to use a different backend |
 | `storage.py` | `AppendLog`, the crash-safe append-only file writer |
+| `stats.py` | `RunStats` / `StatsLog` — the `run_stats.json` snapshot written each turn |
+| `tests/` | `pytest` suite for the text and memory logic; no network, runs in under a second |
 
 ## Troubleshooting
 
@@ -379,6 +383,17 @@ Everything tunable lives in `config.py`, grouped and commented there. Summary:
   script mode; check that the `stop` sequence is actually reaching Ollama
   (`"\n{partner.name}:"`) and that `clean_reply` is receiving `partner=...`.
 
+## Running the tests
+
+```bash
+pip install pytest
+pytest
+```
+
+Everything is offline: the summarizer and speaker calls go through a fake
+client, so the suite needs no Ollama server and finishes in well under a
+second.
+
 ## Known limitations
 
 - **No real information asymmetry.** Both personas hear the exact same
@@ -396,9 +411,11 @@ Everything tunable lives in `config.py`, grouped and commented there. Summary:
   notes format are all things a 3B-class model will occasionally drop or
   garble. `clean_reply` and the retry/shrink logic catch some of this, not
   all of it.
-- **No test suite.** This has been exercised against a scripted fake model
-  during development, not against a live Ollama server for this exact
-  revision — read a bit of `transcript.txt` and `memory.txt` after starting a
+- **The tests cover the pure logic only.** `pytest` exercises reply cleaning,
+  repetition scoring, the memory buffer and the summarizer against a scripted
+  fake model. `llm.py` (the HTTP layer) and `personas.py` (the `personas.md`
+  parser) have no coverage, and nothing is tested against a live Ollama
+  server — read a bit of `transcript.txt` and `memory.txt` after starting a
   fresh run before leaving it going unattended for a long time.
 
 ### Reverting to a relaxed conversation
