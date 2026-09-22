@@ -20,6 +20,9 @@ class RunStats:
     model_b: str = ""
     summarizer_model: str = ""
     script_mode: bool = False
+    scenario: str = ""           # the setting this run was given
+    objective_a: str = ""        # what speaker_a is trying to do
+    objective_b: str = ""        # what speaker_b is trying to do
     started_at: str = field(default_factory=stamp)
     updated_at: str = ""
 

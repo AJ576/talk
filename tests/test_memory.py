@@ -265,3 +265,37 @@ def test_conversation_memory_requires_exactly_two_names():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Per-objective note headings
+# ---------------------------------------------------------------------------
+
+def test_each_owner_gets_only_their_own_objective_headings():
+    client = FakeClient([ok("Lena's notes"), ok("Dev's notes")])
+    summ = Summarizer(client, "m", max_words=250, temperature=0.2)
+    mem = ConversationMemory(
+        summ, 6, 3, ["Lena", "Dev"],
+        note_headings={
+            "Lena": "  PROBES LENA USED: ...",
+            "Dev": "  WHAT DEV REVEALED: ...",
+        },
+    )
+    for t in turns(6):
+        mem.add(t)
+
+    lena_call, dev_call = client.calls[0][0]["content"], client.calls[1][0]["content"]
+    assert "PROBES LENA USED" in lena_call
+    assert "WHAT DEV REVEALED" not in lena_call
+    assert "WHAT DEV REVEALED" in dev_call
+    assert "PROBES LENA USED" not in dev_call
+
+
+def test_the_standard_headings_are_there_with_or_without_objective_headings():
+    client = FakeClient([ok("L"), ok("D")])
+    mem = make_memory(client, max_recent=6, batch=3)  # no note_headings at all
+    for t in turns(6):
+        mem.add(t)
+    system = client.calls[0][0]["content"]
+    assert "WHAT Lena TOLD Dev ABOUT THEMSELVES" in system
+    assert "OPEN THREADS" in system

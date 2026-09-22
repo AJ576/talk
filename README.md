@@ -4,15 +4,35 @@ Two local LLMs (via [Ollama](https://ollama.com)) play two personas talking to
 each other, forever. A third model condenses the conversation into memory as it
 grows, so each persona can keep going far past what fits in one context window.
 
-In the current setup the personas are chatting online, have never met, and each
-one privately suspects the other might be an AI pretending to be human. Every
-reply is expected to defend itself and then push the other person for a slip-up.
-Nobody is ever allowed to admit they're the AI — that's the game.
+Three things are picked separately, from three markdown catalogues, and any
+combination works:
+
+| | file | what it is |
+|---|---|---|
+| **Who** | `personas.md` | the two people: bio and speaking style |
+| **Where** | `scenarios.md` | the setting: chatting online, hosting someone, stuck at an airport gate |
+| **What they want** | `objectives.md` | one goal *per speaker* — they don't have to match |
+
+The default is the suspicion game: both people privately think the other is an
+AI and try to force a confession. But the same two personas can be sat in a
+kitchen with one of them working up to an ask and the other protecting a
+secret, and it's a different conversation entirely.
 
 ```
+$ python main.py Sam Nora --scenario online --objectives unmask unmask
+
 Sam:    that sounds oddly specific for someone who was "just making coffee"
 Nora:   I burned the coffee, actually, because I was on the phone with my sister.
         Ask her yourself. What were YOU doing thirty seconds before you opened this chat?
+```
+
+```
+$ python main.py Lena Dev --scenario delayed-flight --objectives interview guarded
+
+Lena:   Three cancellations? That's... quite a coincidence, I'd say. Did he happen
+        to know what was going on with the flights after they cancelled?
+Dev:    No, he just got the usual vague "technical issues" thing, which is never a
+        good sign, right? I mean, it's always something.
 ```
 
 Everything runs locally. Nothing is sent anywhere except your own Ollama server.
@@ -21,8 +41,11 @@ Everything runs locally. Nothing is sent anywhere except your own Ollama server.
 
 - [Quick start](#quick-start)
 - [How a conversation runs](#how-a-conversation-runs)
-- [The suspicion game](#the-suspicion-game)
 - [Personas](#personas)
+- [Scenarios](#scenarios)
+- [Objectives](#objectives)
+- [The suspicion game](#the-suspicion-game)
+- [Adding your own](#adding-your-own)
 - [Memory: recent turns + per-person notes](#memory-recent-turns--per-person-notes)
 - [Script mode vs. chat mode](#script-mode-vs-chat-mode)
 - [Repetition control](#repetition-control)
@@ -43,10 +66,18 @@ Everything runs locally. Nothing is sent anywhere except your own Ollama server.
    `ollama serve`).
 3. Run:
    ```bash
-   python main.py                # pick two personas from a menu
-   python main.py Nora Caleb      # skip the menu; Nora hosts
-   python main.py --list          # see who's available, then exit
+   python main.py                 # pick everything from a menu
+   python main.py Nora Caleb      # skip the persona menu; Nora opens
+   python main.py --list          # personas, scenarios and objectives, then exit
+
+   # set the whole thing from the command line
+   python main.py Nora Caleb --scenario hosting --objectives recruit guarded
+   python main.py Lena Dev --scenario old-friends --objectives catch-up
    ```
+
+   `--scenario` and `--objectives` default to `SCENARIO`, `OBJECTIVE_A` and
+   `OBJECTIVE_B` in `config.py`. One name after `--objectives` gives both
+   speakers the same goal; two gives them one each, in persona order.
 4. Watch it in the terminal, or read along in `transcript.txt`. `Ctrl+C` stops
    it cleanly at any point; nothing already written is lost.
 
@@ -55,14 +86,14 @@ instance at `http://localhost:11434`.
 
 ## How a conversation runs
 
-`main.py` loads the personas, builds the two models' clients, and hands
-everything to `Conversation.run()` in `conversation.py`. The loop, forever
-(or until `MAX_TURNS`):
+`main.py` loads the three catalogues, resolves the persona pair, the scenario
+and the two objectives, and hands everything to `Conversation.run()` in
+`conversation.py`. The loop, forever (or until `MAX_TURNS`):
 
-1. Figure out whose turn it is (they alternate; the host goes first).
-2. Build that persona's system prompt: their bio, style, the scene, **their
-   own** memory of the conversation so far, the conversation rules, and the
-   suspicion-game instructions.
+1. Figure out whose turn it is (they alternate; `personas[0]` opens).
+2. Build that persona's system prompt: their bio, style, **their side** of the
+   scenario, **their own** memory of the conversation so far, the conversation
+   rules, and last of all **their own** objective.
 3. Build the message history — either classic chat turns or one "script" of
    the recent conversation, depending on `SCRIPT_MODE` (see below).
 4. Send it to that persona's model (`MODEL_A` or `MODEL_B` in `config.py`),
@@ -80,43 +111,10 @@ A separate model, `SUMMARIZER_MODEL`, does the condensing. It never sees or
 continues the live conversation — it's only ever handed "old notes + a chunk
 of transcript" and asked to rewrite the notes.
 
-## The suspicion game
-
-This isn't a neutral chat anymore — it's an adversarial framing layered on top.
-Both personas are told (in `MISSION` in `prompts.py`):
-
-- They strongly suspect their partner is an AI posing as a human, and their
-  partner suspects the same about them.
-- They are certain **they themselves** are human, so an accusation is
-  insulting, not something to entertain.
-- They win only if the partner admits, in plain words, to being an AI. They
-  lose if they admit it themselves, or if they leave/say goodbye.
-- Every message is expected to (1) defend themselves with something concrete
-  and specific if they were just challenged, and (2) end with one *new* probe
-  or challenge aimed at the partner — a question, a demand, a pointed
-  observation about something the partner said.
-
-A private, per-request reminder (`MISSION_REMINDER`) is appended to the last
-message of each API call to reinforce this, but it is **never** written to
-the transcript or memory — the personas' own record of the conversation only
-contains what was actually said out loud.
-
-The personas are also explicitly told they know nothing about their partner's
-life except what's been said in the chat, and must never hand their partner
-their own job, history, or backstory — that's what keeps each side's "defense"
-material distinct and checkable.
-
-If you want the calmer, non-adversarial version back (two friends catching up,
-no suspicion game), see [Reverting to a relaxed conversation](#reverting-to-a-relaxed-conversation)
-below.
-
-### The scenario
-
-`personas.py` sets the scene: the two have never met, they only know each
-other from typing back and forth, so questions like "what's around you right
-now" or "describe your room" are natural probes, not non-sequiturs. The host
-is given an opener that starts casually, without giving away the suspicion
-yet.
+Nothing in the loop knows about any particular scenario or objective. Both are
+plain data, resolved once at startup and then only ever asked for text:
+`scenario.setting_for(...)`, `objective.goal_for(...)`, `objective.reminder_for(...)`.
+Adding a new one means editing a markdown file, not touching Python.
 
 ## Personas
 
@@ -173,6 +171,191 @@ way. Worth pairing them together at least once.
 Pick any two names with `python main.py Name1 Name2`, or omit names to get
 an interactive numbered menu (`--list` just prints it and exits).
 
+## Scenarios
+
+A scenario is the *setting only* — where the two people are and how they came
+to be talking. It never says what either of them wants. Scenarios live in
+`scenarios.md`, parsed by `scenarios.py`:
+
+```markdown
+## hosting
+
+### Tagline
+One of them is hosting the other at home for the evening
+
+### Setting
+It's a weekday evening. There's food, something to drink, and no
+particular reason to hurry.
+
+### First
+You're at home, and {partner} has come over for the evening.
+
+### Second
+You're at {partner}'s place for the evening. You brought something with you.
+
+### Opener
+(You've just let {partner} in and poured them something.)
+```
+
+| Section | Required | Who sees it |
+|---|---|---|
+| `Tagline` | no | nobody — the menu and `--list` |
+| `Setting` | **yes** | both people |
+| `First` | no | only the first speaker |
+| `Second` | no | only the second speaker |
+| `Knowledge` | no | both — what they may assume they already know |
+| `Opener` | **yes** | only the first speaker, only on turn 1 |
+
+`{partner}` is the other person's name, `{speaker}` their own.
+
+`First` and `Second` are what make asymmetric settings work: in `hosting` one
+person is in their own kitchen and the other is a guest, and each is told only
+their own side. Leave both out and the scenario reads identically to both.
+
+`Knowledge` is the one that matters most in practice. Without it two personas
+will cheerfully invent a shared history; `online` and `first-meeting` use it to
+say they're strangers, and `old-friends` uses it to say the opposite.
+
+Shipped: `online`, `hosting`, `first-meeting`, `delayed-flight`, `old-friends`,
+`late-shift`.
+
+## Objectives
+
+An objective is what one person is trying to get out of the conversation.
+**Each speaker gets their own**, so they don't have to match — that's the whole
+point of the catalogue. Objectives live in `objectives.md`, parsed by
+`objectives.py`:
+
+```markdown
+## interview
+
+### Tagline
+Learn everything about them, reveal little about yourself
+
+### Goal
+You want to come out of this knowing far more about {partner} than they
+know about you.
+...
+
+### Reminder
+Answer briefly, then ask {partner} one specific follow-up.
+
+### Notes
+QUESTIONS {owner} HAS ALREADY ASKED: so they aren't asked twice.
+WHAT {owner} STILL WANTS TO KNOW: gaps, and details {partner} skipped past.
+```
+
+| Section | Required | Where it goes |
+|---|---|---|
+| `Tagline` | no | nobody — the menu and `--list` |
+| `Goal` | **yes** | last in the system prompt, where it pulls hardest |
+| `Reminder` | no | the last user message of *every* request |
+| `Notes` | no | extra headings in this person's memory, one per line |
+
+Paragraphs and numbered lists in `Goal` are kept exactly as written. A
+`Reminder` is collapsed to one line.
+
+The three parts do different jobs:
+
+- **`Goal`** sets the behaviour. Write it in the second person, give it a shape
+  to follow, and say what counts as winning *and* losing. Vague objectives
+  produce vague conversations.
+- **`Reminder`** keeps it there. A small model drifts away from a long system
+  prompt after a few turns, and a one-line nudge attached to the newest message
+  pulls it back. It is never written to `transcript.txt` and never folded into
+  memory, so the other speaker never learns what this one is up to.
+- **`Notes`** shapes what this person *remembers*. Memory is already per-person
+  (see below), so the headings can be too: someone running `interview` keeps a
+  list of questions they've already asked, while someone running `guarded`
+  keeps track of how close the other one has come.
+
+Shipped: `unmask`, `catch-up`, `interview`, `guarded`, `persuade`, `recruit`,
+`confess`.
+
+### Pairing them
+
+The interesting runs are the mismatched ones:
+
+| Pairing | What it produces |
+|---|---|
+| `unmask unmask` | the suspicion game — two people trying to out each other |
+| `interview guarded` | one digs, one deflects; nobody is lying outright |
+| `recruit catch-up` | one is working up to an ask, the other hasn't noticed |
+| `confess catch-up` | one is trying to say something difficult and keeps not saying it |
+| `persuade persuade` | an argument where neither is allowed to concede politely |
+| `catch-up catch-up` | no agenda at all; the calm version |
+
+Scenario and objectives are independent, so `--scenario hosting --objectives
+confess catch-up` and `--scenario delayed-flight --objectives confess catch-up`
+are the same pressure in very different rooms.
+
+## The suspicion game
+
+The default pairing — `--scenario online --objectives unmask unmask` — is an
+adversarial framing layered on top of an ordinary chat. It's just one entry in
+`objectives.md`, but it's the one the project was built around, so it's worth
+describing in full. Both people are told:
+
+- They strongly suspect their partner is an AI posing as a human, and their
+  partner suspects the same about them.
+- They are certain **they themselves** are human, so an accusation is
+  insulting, not something to entertain.
+- They win only if the partner admits, in plain words, to being an AI. They
+  lose if they admit it themselves, or if they leave/say goodbye.
+- Every message is expected to (1) defend themselves with something concrete
+  and specific if they were just challenged, and (2) end with one *new* probe
+  or challenge aimed at the partner — a question, a demand, a pointed
+  observation about something the partner said.
+
+Its `Reminder` re-states the defend-then-probe shape on every request, and its
+`Notes` give each side two extra memory headings — the contradictions and
+dodges they've caught, and the probes they've already burned — so the pressure
+doesn't reset every time memory is condensed.
+
+"Never admit you're an AI" lives in this objective, not in the general
+conversation rules, so it doesn't leak into `catch-up` or `confess` runs where
+it would be a strange thing to be told.
+
+The `online` scenario is its natural partner: the two have never met and only
+know each other from typing back and forth, so "what's around you right now"
+and "describe your room" are real probes rather than non-sequiturs. It pairs
+fine with the in-person scenarios too — `first-meeting` gives the accusation
+somewhere much more awkward to happen.
+
+## Adding your own
+
+Nothing in the Python knows about any particular persona, scenario or
+objective, so all three are added the same way: copy a block in the relevant
+`.md` file and change it.
+
+A new scenario needs a `Setting` and an `Opener`. Add `First` and `Second` only
+if the two sides differ (one of them is hosting, one of them arrived late); add
+`Knowledge` to say whether they're strangers, because without it two personas
+will invent a shared past.
+
+A new objective needs a `Goal`. Write it in the second person, give it a
+concrete shape to follow, and say what counts as winning *and* losing. Add a
+`Reminder` — one line, it's the difference between an objective the model
+follows for three turns and one it follows for three hundred. Add `Notes` if
+this person needs to remember something specific to keep the objective
+coherent across a condense.
+
+Placeholders: `{partner}` and `{speaker}` everywhere, plus `{owner}` (same
+person as `{speaker}`) in a `Notes` section. A typo like `{partner_name}` fails
+at load with a message naming the entry, rather than halfway through a run.
+
+Check your work without spending any tokens:
+
+```bash
+python main.py --list      # it parsed, and the taglines read well
+pytest                     # the shipped catalogues all load and render
+```
+
+The test suite loads `personas.md`, `scenarios.md` and `objectives.md` for
+real, and fails if an entry is missing a required section, has no tagline, or
+leaves an unfilled `{placeholder}` behind — so a broken block is caught there
+rather than three turns into a run.
+
 ## Memory: recent turns + per-person notes
 
 There is **one** shared buffer of recent turns (`ConversationMemory.recent`)
@@ -201,18 +384,23 @@ the older conversation, written from their own side.
 The summarizer prompt organizes each person's notes under four fixed
 headings (skipping any that would be empty):
 
+Every set of notes has the same three headings:
+
 - **What `{owner}` told `{partner}` about themselves** — so the owner stays
   consistent with their own story.
 - **What `{partner}` told `{owner}`** — the partner's checkable claims.
-- **Contradictions and dodges** — where the partner's story didn't line up,
-  or they avoided a direct question.
-- **Probes `{owner}` has already used** — so the same challenge isn't
-  repeated turn after turn.
+- **Open threads** — unanswered questions and anything left hanging.
+
+On top of those, the owner's **objective** can add its own (the `Notes` section
+in `objectives.md`). `unmask` adds *contradictions and dodges* and *probes
+already used*; `interview` adds *questions already asked* and *what the owner
+has given away*; `guarded` adds *the one thing being protected* and *how close
+the other one has come*. The two speakers can therefore be keeping notes under
+completely different headings in the same conversation.
 
 It's told to record only what was actually said, never invented feelings or
-motives, and to never write a "both agree" section (this is a leftover
-instruction from the game's more sociable predecessor, but it still helps
-keep the notes factual rather than editorializing).
+motives, and to never write a "both agree" section — which keeps the notes
+factual rather than editorializing.
 
 `MEMORY_FIRST_PERSON` (default `True`) controls the voice:
 
@@ -225,12 +413,14 @@ re-summarized (up to `MAX_SHRINK_PASSES` times, each pass targeting 80% of
 the limit) before being handed to the speaker; if compression stalls, they're
 trimmed line-by-line as a last resort.
 
-**What separate memories do and don't fix:** each person's notes now
-emphasize their own side and their own probes, which helps them stay
-consistent and stops them from silently inheriting the other's phrasing as
-their own. It does **not** give them any private information the other
-doesn't also have access to (both heard the same transcript) — it's a
-difference in emphasis, not in knowledge. Long-run drift (two characters
+**What separate memories do and don't fix:** each person's notes emphasize
+their own side, under headings their own objective chose, which helps them
+stay consistent and stops them from silently inheriting the other's phrasing.
+Both still heard the same transcript, so neither has private information about
+what was *said*. What they do have privately is intent: the objective and its
+reminder never appear in the transcript or in either memory, so a `guarded`
+speaker's secret and a `recruit` speaker's ask are genuinely unknown to the
+other side until they surface in conversation. Long-run drift (two characters
 quietly turning into family, or a running bit escalating past where it makes
 sense) is still possible, since a rewritten summary can lose or blur older
 detail; nothing here pins facts down the way something in the fixed system
@@ -283,13 +473,16 @@ a stock "I love how you..." compliment, and a whole reply wrapped in quotes.
 
 ## Output files
 
-Both files are **append-only** — opened in append mode, flushed and
-`fsync`'d after every write, never truncated or rewritten, including across
-separate runs. A crash can lose at most the message currently mid-generation.
+`transcript.txt` and `memory.txt` are **append-only** — opened in append mode,
+flushed and `fsync`'d after every write, never truncated or rewritten,
+including across separate runs. A crash can lose at most the message currently
+mid-generation. `run_stats.json` is the opposite: a small snapshot, rewritten
+in place every turn.
 
-- **`transcript.txt`** — every message, in order:
+- **`transcript.txt`** — every message, in order. The session header records
+  the setup, so a file with many runs in it stays readable:
   ```
-  === New session | 2026-09-20T15:53:23 | Aisha (host) & Jordan ===
+  === New session | 2026-09-20T15:53:23 | Aisha & Jordan | hosting | recruit vs guarded ===
 
   Aisha: <message>
 
@@ -308,8 +501,16 @@ separate runs. A crash can lose at most the message currently mid-generation.
   The last entry for each name is that person's latest, current memory —
   useful for watching how it evolves (or drifts) over a long run.
 
-Both paths are configurable (`TRANSCRIPT_PATH`, `MEMORY_PATH`) and resolved
-relative to wherever you run the script from.
+- **`run_stats.json`** — a snapshot of where the run stands, rewritten every
+  turn, so a long unattended run can be checked on without reading the
+  transcript. It records the setup (`speaker_a`/`speaker_b`, the models,
+  `scenario`, `objective_a`/`objective_b`) alongside the counters:
+  turns completed, empty replies, LLM errors, repetition regenerations, memory
+  condenses, summarizer failures, forced drops, and `fatal_error` if the run
+  stopped abnormally.
+
+All three paths are configurable (`TRANSCRIPT_PATH`, `MEMORY_PATH`,
+`STATS_PATH`) and resolved relative to wherever you run the script from.
 
 ## Configuration reference
 
@@ -319,9 +520,13 @@ Everything tunable lives in `config.py`, grouped and commented there. Summary:
 |---|---|---|
 | `OLLAMA_URL` | `http://localhost:11434/api/chat` | Where Ollama's chat API is |
 | `NUM_CTX` | `8192` | Context window sent with every request. Too small and Ollama silently truncates the *start* of the prompt (the persona/rules), not the end — raise this if you raise the memory settings below |
-| `MODEL_A` / `MODEL_B` | `llama3.2` | Models for the host / guest persona |
+| `MODEL_A` / `MODEL_B` | `llama3.2` | Models for the first / second speaker |
 | `SUMMARIZER_MODEL` | `llama3.2` | Model used only for condensing memory |
-| `PERSONAS_PATH` | `personas.md` | Resolved relative to the scripts if not absolute |
+| `PERSONAS_PATH` | `personas.md` | Who is talking. Resolved relative to the scripts if not absolute |
+| `SCENARIOS_PATH` | `scenarios.md` | The settings catalogue |
+| `OBJECTIVES_PATH` | `objectives.md` | The objectives catalogue |
+| `SCENARIO` | `online` | Default setting; `--scenario` overrides it |
+| `OBJECTIVE_A` / `OBJECTIVE_B` | `unmask` / `unmask` | Default objective per speaker, in persona order; `--objectives` overrides them |
 | `SCRIPT_MODE` | `False` | See [Script mode vs. chat mode](#script-mode-vs-chat-mode) |
 | `MEMORY_FIRST_PERSON` | `True` | First- vs. third-person notes |
 | `MAX_RECENT_TURNS` | `14` | Verbatim buffer size before condensing |
@@ -347,10 +552,15 @@ Everything tunable lives in `config.py`, grouped and commented there. Summary:
 
 | File | Responsibility |
 |---|---|
-| `main.py` | CLI entry point: argument parsing, persona picker menu, wires everything together |
+| `main.py` | CLI entry point: argument parsing, the three picker menus, wires everything together |
 | `config.py` | All tunables, described above |
-| `personas.py` | Parses `personas.md`, builds the scenario text |
-| `personas.md` | The persona data itself — edit this to add/change people |
+| `catalog.py` | The shared `## Name` / `### Section` markdown parser, lookup and placeholder filling used by all three catalogues |
+| `personas.py` | `Persona` + `load_personas` |
+| `personas.md` | Who is talking — edit this to add/change people |
+| `scenarios.py` | `Scenario` + `load_scenarios`; renders each speaker's own side of the setting |
+| `scenarios.md` | Where they are — edit this to add/change settings |
+| `objectives.py` | `Objective` + `load_objectives`; renders the goal, the private reminder and the memory headings |
+| `objectives.md` | What each one wants — edit this to add/change objectives |
 | `prompts.py` | Every prompt string: flow rules, the suspicion-game mission, summarizer/shrink prompts, script-mode framing |
 | `conversation.py` | The main loop; reply cleaning (`clean_reply`, `strip_actions`); repetition scoring and retry logic |
 | `memory.py` | `Turn`, `Summarizer` (condenses/shrinks notes via the LLM), `ConversationMemory` (verbatim buffer + per-person summaries) |
@@ -396,34 +606,43 @@ second.
 
 ## Known limitations
 
-- **No real information asymmetry.** Both personas hear the exact same
-  transcript; per-person memory changes *emphasis*, not *knowledge*. Don't
-  expect one side to "know something the other doesn't" beyond what's been
-  said out loud.
+- **Asymmetry is in intent, not in facts.** Objectives, reminders and memory
+  headings are genuinely private, so the two sides want different things and
+  remember under different headings. But both hear the exact same transcript,
+  so neither knows a *fact* the other doesn't. A `guarded` speaker invents the
+  thing they're protecting on the fly and holds it only in their own notes;
+  nothing hands either side private world-state up front.
 - **Long-run drift.** Because the running notes are rewritten (not appended)
   on every condense, a detail introduced early and never repeated can fade
   out of a person's memory over a very long conversation, while something
   vivid and recent dominates. Nothing pins a fact down except the fixed
   system prompt (bio, style, scenario) — anything that needs to be permanent
   should live there, not rely on surviving the summarizer indefinitely.
-- **Small local models will sometimes ignore instructions** — the mission
-  format (defend, then probe), the "never admit you're an AI" rule, and the
-  notes format are all things a 3B-class model will occasionally drop or
-  garble. `clean_reply` and the retry/shrink logic catch some of this, not
-  all of it.
+- **Small local models will sometimes ignore instructions** — an objective's
+  shape (defend then probe; answer briefly then ask), its win/lose conditions,
+  and the notes format are all things a 3B-class model will occasionally drop
+  or garble. The `Reminder` section exists precisely because of this and helps
+  a lot, but it doesn't fix it. `clean_reply` and the retry/shrink logic catch
+  some of the rest.
+- **Long objectives crowd out the persona.** The whole system prompt competes
+  for the same attention: bio, style, setting, memory, rules, objective. A
+  300-word objective on a 3B model will flatten the persona's voice. Keep new
+  objectives about the length of the shipped ones.
 - **The tests cover the pure logic only.** `pytest` exercises reply cleaning,
-  repetition scoring, the memory buffer and the summarizer against a scripted
-  fake model. `llm.py` (the HTTP layer) and `personas.py` (the `personas.md`
-  parser) have no coverage, and nothing is tested against a live Ollama
+  repetition scoring, the memory buffer, the summarizer, the three catalogue
+  loaders and the prompt wiring against a scripted fake model. `llm.py` (the
+  HTTP layer) has no coverage, and nothing is tested against a live Ollama
   server — read a bit of `transcript.txt` and `memory.txt` after starting a
   fresh run before leaving it going unattended for a long time.
 
 ### Reverting to a relaxed conversation
 
-If you'd rather go back to two people just catching up, with no suspicion
-game: replace `MISSION` in `prompts.py` with an empty string (and drop the
-`build_speaker_prompt` call that appends it), remove the "you know nothing
-about {partner}'s life" line if you want them to be old friends instead of
-strangers, and change `SCENARIO` / `OPENER` in `personas.py` back to a
-shared, in-person setting. The memory and script-mode machinery underneath
-doesn't depend on the mission at all.
+This used to require editing `prompts.py`. It's now a flag:
+
+```bash
+python main.py --scenario old-friends --objectives catch-up
+```
+
+`catch-up` has no reminder and no extra memory headings, so nothing is pushing
+the conversation anywhere. `old-friends` is the one scenario that lets them
+assume a shared history rather than treating each other as strangers.

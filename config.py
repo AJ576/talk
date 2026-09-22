@@ -15,8 +15,22 @@ MODEL_A = "llama3.2"          # speaks as the first persona (opens the conversat
 MODEL_B = "llama3.2"          # speaks as the second persona (replies first)
 SUMMARIZER_MODEL = "llama3.2" # third model: only condenses, never chats
 
-# --- Personas ------------------------------------------------------------------
-PERSONAS_PATH = "personas.md"  # relative paths are resolved next to the scripts
+# --- Who is talking, where, and what they want ---------------------------------
+# Three independent catalogues, each a markdown file (relative paths are
+# resolved next to the scripts). Any persona pair can be run in any scenario
+# with any pair of objectives; `python main.py --list` prints all three.
+PERSONAS_PATH = "personas.md"
+SCENARIOS_PATH = "scenarios.md"     # the setting: where they are, how they met
+OBJECTIVES_PATH = "objectives.md"   # what each one is trying to do
+
+# Defaults, used when nothing is passed on the command line. `--scenario` and
+# `--objectives` override them; the menu offers them with these preselected.
+SCENARIO = "online"
+# One objective per speaker, in persona order (OBJECTIVE_A is the one who
+# opens). Set them to different names for an asymmetric conversation, e.g.
+# "interview" against "guarded".
+OBJECTIVE_A = "unmask"
+OBJECTIVE_B = "unmask"
 
 # --- How each speaker is shown the conversation ---------------------------------
 # True  = "script mode": the recent messages go to the model as one script

@@ -67,12 +67,14 @@ class Summarizer:
             raise LLMError("summarizer returned nothing usable")
         return text
 
-    def condense(self, previous_summary, turns, owner, partner):
-        """New notes for `owner` (whose notebook this is) about their talk with `partner`."""
+    def condense(self, previous_summary, turns, owner, partner, extra_headings=""):
+        """New notes for `owner` (whose notebook this is) about their talk with
+        `partner`. `extra_headings` comes from `owner`'s objective, so what they
+        write down follows what they're trying to do."""
         transcript = "\n".join(f"{t.speaker}: {t.text}" for t in turns)
         messages = build_summarizer_messages(
             previous_summary, transcript, self.max_words, owner, partner,
-            self.first_person,
+            self.first_person, extra_headings,
         )
         result = self.client.chat(
             self.model,
@@ -118,11 +120,13 @@ class Summarizer:
 
 
 class ConversationMemory:
-    def __init__(self, summarizer, max_recent_turns, condense_batch, names, stats=None):
-        """`names` are the two speakers; each gets their own summary. `stats`,
-        if given, is a stats.RunStats that gets a few counters incremented
-        (summarizer_failures, memory_condenses, memory_forced_drops); nothing
-        else here depends on it."""
+    def __init__(self, summarizer, max_recent_turns, condense_batch, names,
+                 note_headings=None, stats=None):
+        """`names` are the two speakers; each gets their own summary.
+        `note_headings`, if given, maps a name to the extra memory headings from
+        that person's objective. `stats`, if given, is a stats.RunStats that gets
+        a few counters incremented (summarizer_failures, memory_condenses,
+        memory_forced_drops); nothing else here depends on it."""
         if condense_batch >= max_recent_turns:
             raise ValueError("CONDENSE_BATCH must be smaller than MAX_RECENT_TURNS")
         if len(names) != 2:
@@ -132,6 +136,7 @@ class ConversationMemory:
         self.batch = condense_batch
         self.names = list(names)
         self.summaries = {n: "" for n in self.names}
+        self.note_headings = dict(note_headings or {})
         self.recent = []
         self._pending = {}  # new summaries finished before the other one failed
         self._skip = 0
@@ -176,7 +181,8 @@ class ConversationMemory:
             partner = self.names[1] if owner == self.names[0] else self.names[0]
             try:
                 self._pending[owner] = self.summarizer.condense(
-                    self.summaries[owner], old, owner, partner
+                    self.summaries[owner], old, owner, partner,
+                    self.note_headings.get(owner, ""),
                 )
             except LLMError as e:
                 print(f"  [summarizer failed for {owner}: {e}; "

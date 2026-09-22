@@ -8,7 +8,7 @@ from llm import LLMError
 from memory import Turn
 from prompts import (
     REPEAT_NUDGE,
-    add_mission_reminder,
+    add_reminder,
     build_script_message,
     build_speaker_prompt,
 )
@@ -140,15 +140,15 @@ def repetition_score(text, recent_texts):
 
 class Conversation:
     def __init__(
-        self, client, models, personas, memory, scenario_fn, opener,
+        self, client, models, personas, objectives, memory, scenario,
         transcript_log, memory_log, stats_log=None,
     ):
         self.client = client
         self.models = models              # models[i] plays personas[i]
         self.personas = personas          # personas[0] speaks first
+        self.objectives = objectives      # objectives[i] is what personas[i] wants
         self.memory = memory
-        self.scenario_fn = scenario_fn    # (speaker, partner) -> scene text
-        self.opener = opener              # contains {partner}
+        self.scenario = scenario          # scenarios.Scenario: the shared setting
         self.transcript_log = transcript_log  # append-only: every message
         self.memory_log = memory_log          # append-only: every summary update
         self.stats_log = stats_log            # optional stats.StatsLog; written each turn
@@ -207,7 +207,11 @@ class Conversation:
 
     def run(self):
         a, b = self.personas
-        header = f"=== New session | {stamp()} | {a.name} & {b.name} ===\n\n"
+        header = (
+            f"=== New session | {stamp()} | {a.name} & {b.name} "
+            f"| {self.scenario.name} "
+            f"| {self.objectives[0].name} vs {self.objectives[1].name} ===\n\n"
+        )
         self.transcript_log.write("\n" + header)
         self.memory_log.write("\n" + header)
 
@@ -219,14 +223,19 @@ class Conversation:
             idx = turn_no % 2
             speaker = self.personas[idx]
             partner = self.personas[1 - idx]
+            objective = self.objectives[idx]
 
-            # Each speaker gets their own memory of the older conversation.
+            # Each speaker gets their own side of the setting, their own memory
+            # of the older conversation, and their own objective.
             system = build_speaker_prompt(
-                speaker, partner.name, self.scenario_fn(speaker, partner),
+                speaker, partner.name,
+                self.scenario.setting_for(speaker.name, partner.name, idx == 0),
                 self.memory.summary_for(speaker.name),
+                objective.goal_for(speaker.name, partner.name),
             )
             if not self.memory.recent:
-                history = [{"role": "user", "content": self.opener.format(partner=partner.name)}]
+                opener = self.scenario.opener_for(speaker.name, partner.name)
+                history = [{"role": "user", "content": opener}]
             elif config.SCRIPT_MODE:
                 history = [{
                     "role": "user",
@@ -237,8 +246,11 @@ class Conversation:
             else:
                 history = self.memory.chat_view(speaker.name)
             # A private nudge on the last user message of this one request only:
-            # it is never written to the transcript or folded into memory.
-            history = add_mission_reminder(history, partner.name)
+            # it is never written to the transcript or folded into memory, so
+            # the other speaker never learns what this one is trying to do.
+            history = add_reminder(
+                history, objective.reminder_for(speaker.name, partner.name)
+            )
 
             try:
                 text = self._generate(idx, speaker, partner, system, history)
