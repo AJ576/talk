@@ -1,7 +1,8 @@
 """Loads the personas from personas.md and sets the scene.
 
-Edit personas.md to change or add people. Neither persona is ever told that the
-other is an AI: to each of them, the other is just a friend.
+Edit personas.md to change or add people. Each persona is told to suspect that
+the other is an AI, to try to make them admit it, and never to admit it themselves
+(see MISSION in prompts.py).
 """
 
 from dataclasses import dataclass
@@ -76,22 +77,23 @@ def find_persona(personas, name):
     return None
 
 
-# {partner} is the other person's name, {place} is "your place" or "<Host>'s place".
+# {partner} is the other person's name. They talk online and have never met, so
+# "are you even real?" is a natural thing to wonder and probes about the body or
+# the room actually mean something.
 SCENARIO = (
-    "You and {partner} are talking. "
+    "You and {partner} are chatting online. You've never met or seen each other, "
+    "so all you have to go on is what you type to each other."
 )
 
 # Shown only to the host, on the very first turn.
 OPENER = (
-    "(You've just started talking with {partner},"
-    "Start the conversation in your own way."
+    "(You've just started chatting with {partner}. Open with a casual "
+    "discussion about where they are and what's around them right now. "
+    "Don't reveal that you're suspicious yet.)"
 )
 
 
 def build_scenario(speaker, partner, host):
-    """The scene as seen by `speaker`. The scene is at the host's home."""
-    if speaker.name == host.name:
-        place = "your place"
-    else:
-        place = f"{host.name}'s place"
-    return SCENARIO.format(partner=partner.name, place=place)
+    """The scene as seen by `speaker`. `host` is unused now (nobody's home is the
+    setting) but kept so main.py doesn't need to change."""
+    return SCENARIO.format(partner=partner.name)

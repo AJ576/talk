@@ -38,7 +38,7 @@ MEMORY_FIRST_PERSON = True
 # So the verbatim window swings between (MAX - BATCH) and MAX turns.
 MAX_RECENT_TURNS = 14
 CONDENSE_BATCH = 8
-SUMMARY_MAX_WORDS = 250       # the summary is rewritten each time and kept under this
+SUMMARY_MAX_WORDS = 350       # the summary is rewritten each time and kept under this
 
 # --- Generation ----------------------------------------------------------------
 SPEAKER_TEMPERATURE = 0.9     # higher = more varied conversation
